@@ -1,4 +1,10 @@
 {
+  "knightCombat": {
+    "profile": "Balanced",
+    "manaReserve": 35,
+    "defensiveHp": 45,
+    "protectPlayers": true
+  },
   "hpitem1": {
     "max": 90,
     "title": "HP%",

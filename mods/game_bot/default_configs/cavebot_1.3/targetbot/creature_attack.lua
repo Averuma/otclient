@@ -14,6 +14,10 @@ TargetBot.Creature.attack = function(params, targets, isLooting) -- params {conf
     TargetBot.Creature.walk(creature, config, targets)
   end
 
+  if KnightCombatBrain and KnightCombatBrain.process(params, targets, isLooting) then
+    return
+  end
+
   -- attacks
   local mana = player:getMana()
   if config.useGroupAttack and config.groupAttackSpell:len() > 1 and mana > config.minManaGroup then
