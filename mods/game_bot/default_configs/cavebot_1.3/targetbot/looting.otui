@@ -7,6 +7,7 @@ TargetBotLootingPanel < Panel
     margin-top: 5
 
   Label
+    id: labelToLoot
     margin-top: 5
     text: Items to loot
     text-align: center
@@ -14,11 +15,13 @@ TargetBotLootingPanel < Panel
   BotContainer
     id: items
     margin-top: 3
+    height:100
 
   BotSwitch
     id: everyItem
-    !text: tr("Loot every item")
+    !text: tr("Loot every item, except these")
     margin-top: 2
+    font: small-9px
 
   Label
     margin-top: 5
@@ -29,6 +32,7 @@ TargetBotLootingPanel < Panel
     id: containers
     margin-top: 3
     height: 45
+    height: 100
 
   Panel
     id: maxDangerPanel
@@ -67,17 +71,3 @@ TargetBotLootingPanel < Panel
       anchors.verticalCenter: prev.verticalCenter
       text: Min. capacity:
       margin-left: 5
-
-  Label
-    margin-top: 3
-    margin-left: 20
-    margin-right: 20
-    !text: tr("Drag item or click on any of empty slot")
-    text-align: center
-    text-wrap: true
-    text-auto-resize: true
-
-  BotButton
-    margin-top: 3
-    text: Help & Tutorials
-    @onClick: g_platform.openUrl("http://bot.otclient.ovh/")

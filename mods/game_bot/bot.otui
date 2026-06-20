@@ -42,10 +42,52 @@ BotTabBarButton < UIButton
   $on !checked:
     color: #de6f6f
 
+BotShellCard < Panel
+  image-source: /images/ui/panel_flat
+  image-border: 1
+  padding: 6
+
+BotShellTitle < Label
+  height: 16
+  color: #e7d28a
+  font: verdana-11px-rounded
+  text-align: left
+  text-offset: 0 2
+
+BotShellText < Label
+  height: 16
+  color: #cfcfcf
+  font: verdana-11px-rounded
+  text-align: left
+  text-offset: 0 2
+
+BotShellValue < Label
+  height: 16
+  color: #ffffff
+  font: verdana-11px-rounded
+  text-align: right
+  text-offset: 0 2
+
+BotShellRow < Panel
+  height: 17
+
+  BotShellText
+    id: label
+    anchors.top: parent.top
+    anchors.left: parent.left
+    width: 86
+
+  BotShellValue
+    id: value
+    anchors.top: parent.top
+    anchors.left: label.right
+    anchors.right: parent.right
+    margin-left: 4
+
 MiniWindow
   id: botWindow
   !text: tr('Bot')
-  height: 600
+  height: 642
   @onClose: modules.game_bot.onMiniWindowClose()
   &save: true
   &autoOpen: 10
@@ -114,9 +156,51 @@ MiniWindow
         text: Off
         color: #FF0000
 
+    BotShellCard
+      id: shellCard
+      anchors.top: enableButton.bottom
+      anchors.left: parent.left
+      anchors.right: parent.right
+      height: 94
+      margin-top: 5
+      margin-left: 2
+      margin-right: 2
+
+      BotShellTitle
+        id: shellStatus
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        !text: tr('Idle')
+
+      BotShellRow
+        id: shellProfile
+        anchors.top: shellStatus.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        margin-top: 2
+
+      BotShellRow
+        id: shellRuntime
+        anchors.top: shellProfile.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+
+      BotShellRow
+        id: shellMacros
+        anchors.top: shellRuntime.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+
+      BotShellRow
+        id: shellIssues
+        anchors.top: shellMacros.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+
     Label
       id: statusLabel
-      anchors.top: prev.bottom
+      anchors.top: shellCard.bottom
       anchors.left: parent.left
       anchors.right: parent.right
       text-wrap: true

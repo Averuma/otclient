@@ -16,8 +16,122 @@ local configList = nil
 local enableButton = nil
 local executeEvent = nil
 local statusLabel = nil
+local shellStatus = nil
+local shellProfile = nil
+local shellRuntime = nil
+local shellMacros = nil
+local shellIssues = nil
+local botStartedAt = nil
+local lastShellUpdate = 0
 
 local configManagerUrl = "http://otclient.ovh/configs.php"
+
+local function formatRuntime(seconds)
+  seconds = math.max(0, tonumber(seconds) or 0)
+  if seconds < 60 then
+    return seconds .. "s"
+  end
+
+  local minutes = math.floor(seconds / 60)
+  if minutes < 60 then
+    return minutes .. "m " .. (seconds % 60) .. "s"
+  end
+
+  local hours = math.floor(minutes / 60)
+  minutes = minutes % 60
+  return hours .. "h " .. minutes .. "m"
+end
+
+local function setShellRow(row, label, value)
+  if not row then
+    return
+  end
+
+  row.label:setText(label)
+  row.value:setText(value)
+end
+
+local function getSelectedConfigName()
+  local current = configList and configList:getCurrentOption()
+  return current and current.text or "-"
+end
+
+local function updateBotShell(mode, detail)
+  if not shellStatus then
+    return
+  end
+
+  local onlineState = g_game.isOnline()
+  local configName = getSelectedConfigName()
+  local profile = g_settings.getNumber('profile') or 0
+  local statusText = detail or mode or "Idle"
+  local statusColor = "#e7d28a"
+
+  if mode == "running" then
+    statusText = "Running"
+    statusColor = "#7dff8b"
+  elseif mode == "disabled" then
+    statusText = "Disabled"
+    statusColor = "#ff8d76"
+  elseif mode == "offline" then
+    statusText = "Offline"
+    statusColor = "#bfbfbf"
+  elseif mode == "error" then
+    statusText = "Needs attention"
+    statusColor = "#ff5c5c"
+  elseif mode == "loading" then
+    statusText = "Loading"
+    statusColor = "#f0d875"
+  end
+
+  shellStatus:setText(statusText)
+  shellStatus:setColor(statusColor)
+  setShellRow(shellProfile, "Profile", "P" .. profile .. " / " .. configName)
+
+  if not onlineState then
+    setShellRow(shellRuntime, "Runtime", "login required")
+    setShellRow(shellMacros, "Macros", "-")
+    setShellRow(shellIssues, "Health", "waiting")
+    if botButton then
+      botButton:setTooltip("Bot: offline")
+    end
+    return
+  end
+
+  if not botExecutor then
+    setShellRow(shellRuntime, "Runtime", "-")
+    setShellRow(shellMacros, "Macros", "-")
+    setShellRow(shellIssues, "Health", "idle")
+    if botButton then
+      botButton:setTooltip("Bot: " .. statusText)
+    end
+    return
+  end
+
+  local elapsed = botStartedAt and math.floor((g_clock.millis() - botStartedAt) / 1000) or 0
+  local stats = {}
+  if botExecutor.getStats then
+    local ok, result = pcall(botExecutor.getStats)
+    if ok and type(result) == "table" then
+      stats = result
+    end
+  end
+
+  setShellRow(shellRuntime, "Runtime", formatRuntime(elapsed))
+  setShellRow(shellMacros, "Macros", (stats.enabledMacros or 0) .. "/" .. (stats.macros or 0) .. " on, " .. (stats.hotkeys or 0) .. " hotkeys")
+
+  local issueText = "ok"
+  if (stats.errors or 0) > 0 then
+    issueText = (stats.errors or 0) .. " errors"
+  elseif (stats.slowMacros or 0) > 0 then
+    issueText = (stats.slowMacros or 0) .. " slow"
+  end
+  setShellRow(shellIssues, "Health", issueText)
+
+  if botButton then
+    botButton:setTooltip("Bot: " .. statusText .. " | " .. configName .. " | " .. issueText)
+  end
+end
 
 function init()
   dofile("executor")
@@ -76,6 +190,11 @@ function init()
   configList = contentsPanel.config
   enableButton = contentsPanel.enableButton
   statusLabel = contentsPanel.statusLabel
+  shellStatus = contentsPanel:recursiveGetChildById('shellStatus')
+  shellProfile = contentsPanel:recursiveGetChildById('shellProfile')
+  shellRuntime = contentsPanel:recursiveGetChildById('shellRuntime')
+  shellMacros = contentsPanel:recursiveGetChildById('shellMacros')
+  shellIssues = contentsPanel:recursiveGetChildById('shellIssues')
   botMessages = contentsPanel.messages
   botTabs = contentsPanel.botTabs
   botTabs:setContentWidget(contentsPanel.botPanel)
@@ -109,6 +228,7 @@ end
 
 function clear()
   botExecutor = nil
+  botStartedAt = nil
   removeEvent(checkEvent)
 
   -- optimization, callback is not used when not needed
@@ -203,17 +323,20 @@ function loadConfigsList()
   configList.onOptionChange = function(widget)
     if g_game.isOnline() then refresh() end
   end
+  updateBotShell(g_game.isOnline() and "disabled" or "offline")
 end
 
 function refresh()
   if not g_game.isOnline() then return end
   save()
   clear()
+  updateBotShell("loading")
 
   loadConfigsList()
   if not configList.options or #configList.options == 0 then
     statusLabel:setOn(true)
     statusLabel:setText("No configs found in " .. g_resources.getWriteDir() .. "bot/")
+    updateBotShell("error", "No configs found")
     return
   end
 
@@ -253,6 +376,7 @@ function refresh()
   if not g_game.isOnline() or not settings[index].enabled then
     statusLabel:setOn(true)
     statusLabel:setText("Status: disabled\nPress off button to enable")
+    updateBotShell("disabled")
     analyzerButton = modules.game_mainpanel.getButton("botAnalyzersButton")
     if analyzerButton then
       analyzerButton:destroy()
@@ -261,6 +385,7 @@ function refresh()
   end
 
   local configName = settings[index].config
+  updateBotShell("loading", "Loading " .. configName)
 
   -- storage
   botStorage = {}
@@ -292,6 +417,9 @@ function refresh()
   updateBotTabsHeight()
   statusLabel:setOn(false)
   botExecutor = result
+  botStartedAt = g_clock.millis()
+  lastShellUpdate = 0
+  updateBotShell("running")
   check()
 end
 
@@ -338,6 +466,7 @@ end
 
 function online()
   botWindow:setupOnStart()
+  updateBotShell("loading")
   if not (modules.client_profiles and modules.client_profiles.ChangedProfile) then
     scheduleEvent(refresh, 20)
   end
@@ -347,11 +476,13 @@ function offline()
   save()
   clear()
   editWindow:hide()
+  updateBotShell("offline")
 end
 
 function onError(message)
   statusLabel:setOn(true)
   statusLabel:setText("Error:\n" .. message)
+  updateBotShell("error")
   g_logger.error("[BOT] " .. message)
 end
 
@@ -520,6 +651,12 @@ function message(category, msg)
   if botMessages:getChildCount() > 5 then
     botMessages:getFirstChild():destroy()
   end
+
+  if category == 'error' then
+    updateBotShell("error")
+  elseif botExecutor then
+    updateBotShell("running")
+  end
 end
 
 function check()
@@ -536,6 +673,11 @@ function check()
   if not status then
     botExecutor = nil -- critical
     return onError(result)
+  end
+
+  if lastShellUpdate + 1000 < g_clock.millis() then
+    lastShellUpdate = g_clock.millis()
+    updateBotShell("running")
   end
 
   -- remove old messages

@@ -36,6 +36,15 @@ function executeBot(config, storage, tabs, msgCallback, saveConfigCallback, relo
   context._macros = {}
   context._hotkeys = {}
   context._scheduler = {}
+  context._slowMacroWarnings = {}
+  context._stats = {
+    macroRuns = 0,
+    schedulerRuns = 0,
+    errors = 0,
+    slowMacros = 0,
+    lastError = "",
+    lastSlowMacro = ""
+  }
   context._callbacks = {
     onKeyDown = {},
     onKeyUp = {},
@@ -195,13 +204,29 @@ function executeBot(config, storage, tabs, msgCallback, saveConfigCallback, relo
 
       for i, macro in ipairs(context._macros) do
         if macro.lastExecution + macro.timeout <= context.now and macro.enabled then
+          local startedAt = g_clock.millis()
           local status, result = pcall(function()
             if macro.callback(macro) then
                 macro.lastExecution = context.now
             end
           end)
           if not status then
+            context._stats.errors = context._stats.errors + 1
+            context._stats.lastError = tostring(result)
             context.error("Macro: " .. macro.name .. " execution error: " .. result)
+          else
+            context._stats.macroRuns = context._stats.macroRuns + 1
+            local elapsed = g_clock.millis() - startedAt
+            if elapsed > 150 then
+              local macroName = macro.name or "unnamed"
+              context._stats.slowMacros = context._stats.slowMacros + 1
+              context._stats.lastSlowMacro = macroName .. " (" .. elapsed .. "ms)"
+              local nextWarning = context._slowMacroWarnings[macroName] or 0
+              if nextWarning <= context.now then
+                context._slowMacroWarnings[macroName] = context.now + 10000
+                context.warn("Slow macro: " .. context._stats.lastSlowMacro)
+              end
+            end
           end
         end
       end
@@ -211,10 +236,40 @@ function executeBot(config, storage, tabs, msgCallback, saveConfigCallback, relo
           context._scheduler[1].callback()
         end)
         if not status then
+          context._stats.errors = context._stats.errors + 1
+          context._stats.lastError = tostring(result)
           context.error("Schedule execution error: " .. result)
+        else
+          context._stats.schedulerRuns = context._stats.schedulerRuns + 1
         end
         table.remove(context._scheduler, 1)
       end
+    end,
+    getStats = function()
+      local enabledMacros = 0
+      for _, macro in ipairs(context._macros) do
+        if macro.enabled then
+          enabledMacros = enabledMacros + 1
+        end
+      end
+
+      local hotkeys = 0
+      for _ in pairs(context._hotkeys) do
+        hotkeys = hotkeys + 1
+      end
+
+      return {
+        macros = #context._macros,
+        enabledMacros = enabledMacros,
+        hotkeys = hotkeys,
+        scheduled = #context._scheduler,
+        macroRuns = context._stats.macroRuns,
+        schedulerRuns = context._stats.schedulerRuns,
+        errors = context._stats.errors,
+        slowMacros = context._stats.slowMacros,
+        lastError = context._stats.lastError,
+        lastSlowMacro = context._stats.lastSlowMacro
+      }
     end,
     callbacks = {
       onKeyDown = function(keyCode, keyboardModifiers)

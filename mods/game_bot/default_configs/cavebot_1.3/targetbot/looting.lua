@@ -8,12 +8,18 @@ local itemsById = {}
 local containersById = {}
 local dontSave = false
 
+local function updateLootingModeLabel()
+  if not ui or not ui.labelToLoot then return end
+  ui.labelToLoot:setText(ui.everyItem:isOn() and "Items to ignore" or "Items to loot")
+end
+
 TargetBot.Looting.setup = function()
   ui = UI.createWidget("TargetBotLootingPanel")
   UI.Container(TargetBot.Looting.onItemsUpdate, true, nil, ui.items)
   UI.Container(TargetBot.Looting.onContainersUpdate, true, nil, ui.containers)
   ui.everyItem.onClick = function()
     ui.everyItem:setOn(not ui.everyItem:isOn())
+    updateLootingModeLabel()
     TargetBot.save()
   end
   ui.maxDangerPanel.value.onTextChange = function()
@@ -51,7 +57,8 @@ TargetBot.Looting.update = function(data)
   TargetBot.Looting.list = {}
   ui.items:setItems(data['items'] or {})
   ui.containers:setItems(data['containers'] or {})
-  ui.everyItem:setOn(data['everyItem'])
+  ui.everyItem:setOn(not not data['everyItem'])
+  updateLootingModeLabel()
   ui.maxDangerPanel.value:setText(data['maxDanger'] or 10)
   ui.minCapacityPanel.value:setText(data['minCapacity'] or 100)
   TargetBot.Looting.updateItemsAndContainers()
@@ -83,6 +90,96 @@ local waitTill = 0
 local waitingForContainer = nil
 local status = ""
 local lastFoodConsumption = 0
+local lootContainerStates = {}
+
+local function getLootContainerState(container)
+  local id = container:getId()
+  if not lootContainerStates[id] then
+    lootContainerStates[id] = {
+      active = false,
+      emptyLootScans = 0,
+      lastLootAction = 0,
+      awaitingNextLootPage = false
+    }
+  end
+  return lootContainerStates[id]
+end
+
+local function shouldLootItem(item)
+  if not item or item:isContainer() then
+    return false
+  end
+
+  if ui.everyItem:isOn() then
+    return not itemsById[item:getId()]
+  end
+
+  return itemsById[item:getId()]
+end
+
+local function getLootPriority(item)
+  if item:isStackable() then
+    return 1
+  end
+  return 2
+end
+
+local function buildLootPlan(container)
+  local plan = {
+    items = {},
+    containers = {},
+    food = nil
+  }
+
+  for _, item in ipairs(container:getItems()) do
+    if shouldLootItem(item) then
+      table.insert(plan.items, item)
+    elseif item:isContainer() and not itemsById[item:getId()] then
+      table.insert(plan.containers, item)
+    elseif not plan.food and storage.foodItems and storage.foodItems[1] and lastFoodConsumption + 5000 < now then
+      for _, food in ipairs(storage.foodItems) do
+        if item:getId() == food.id then
+          plan.food = item
+          break
+        end
+      end
+    end
+  end
+
+  table.sort(plan.items, function(a, b)
+    local priorityA = getLootPriority(a)
+    local priorityB = getLootPriority(b)
+    if priorityA ~= priorityB then
+      return priorityA < priorityB
+    end
+    if a:isStackable() and b:isStackable() and a:getCount() ~= b:getCount() then
+      return a:getCount() > b:getCount()
+    end
+    return a:getId() < b:getId()
+  end)
+
+  table.sort(plan.containers, function(a, b)
+    return a:getId() < b:getId()
+  end)
+
+  return plan
+end
+
+local function seekNextContainerPage(container)
+  if not container or not container:hasPages() then
+    return false
+  end
+
+  local nextIndex = container:getFirstIndex() + container:getCapacity()
+  if nextIndex >= container:getSize() then
+    return false
+  end
+
+  g_game.seekInContainer(container:getId(), nextIndex)
+  waitTill = now + 350
+  getLootContainerState(container).awaitingNextLootPage = true
+  return true
+end
 
 TargetBot.Looting.getStatus = function()
   return status
@@ -102,7 +199,9 @@ TargetBot.Looting.process = function(targets, dangerLevel)
     TargetBot.Looting.list = {}
     return false
   end
-  local loot = TargetBot.Looting.list[1]
+  storage.extras = storage.extras or {}
+  local extras = storage.extras
+  local loot = extras.lootLast and TargetBot.Looting.list[#TargetBot.Looting.list] or TargetBot.Looting.list[1]
   if loot == nil then
     status = ""
     return false
@@ -124,7 +223,8 @@ TargetBot.Looting.process = function(targets, dangerLevel)
   status = "Looting"
 
   for index, container in pairs(containers) do
-    if container.lootContainer then
+    local state = lootContainerStates[container:getId()]
+    if container.lootContainer or (state and state.active) then
       TargetBot.Looting.lootContainer(lootContainers, container)
       return true
     end
@@ -132,8 +232,9 @@ TargetBot.Looting.process = function(targets, dangerLevel)
 
   local pos = player:getPosition()
   local dist = math.max(math.abs(pos.x-loot.pos.x), math.abs(pos.y-loot.pos.y))
-  if loot.tries > 30 or loot.pos.z ~= pos.z or dist > 20 then
-    table.remove(TargetBot.Looting.list, 1)
+  local maxRange = extras.looting or 40
+  if loot.tries > 30 or loot.pos.z ~= pos.z or dist > maxRange then
+    table.remove(TargetBot.Looting.list, extras.lootLast and #TargetBot.Looting.list or 1)
     return true
   end
 
@@ -155,14 +256,13 @@ TargetBot.Looting.process = function(targets, dangerLevel)
 
   local container = tile:getTopUseThing()
   if not container or not container:isContainer() then
-    table.remove(TargetBot.Looting.list, 1)
+    table.remove(TargetBot.Looting.list, extras.lootLast and #TargetBot.Looting.list or 1)
     return true
   end
 
   g_game.open(container)
-  waitTill = now + 1000 -- give it 1s to open
+  waitTill = now + (extras.lootDelay or 200)
   waitingForContainer = container:getId()
-  loot.tries = loot.tries + 10
 
   return true
 end
@@ -174,7 +274,7 @@ TargetBot.Looting.getLootContainers = function(containers)
   for index, container in pairs(containers) do
     openedContainersById[container:getContainerItem():getId()] = 1
     if containersById[container:getContainerItem():getId()] and not container.lootContainer then
-      if container:getItemsCount() < container:getCapacity() then
+      if container:getItemsCount() < container:getCapacity() or container:hasPages() then
         table.insert(lootContainers, container)
       else -- it's full, open next container if possible
         for slot, item in ipairs(container:getItems()) do
@@ -219,28 +319,44 @@ TargetBot.Looting.getLootContainers = function(containers)
 end
 
 TargetBot.Looting.lootContainer = function(lootContainers, container)
-  -- loot items
-  local nextContainer = nil
-  for i, item in ipairs(container:getItems()) do
-    if item:isContainer() and not itemsById[item:getId()] then
-      nextContainer = item
-    elseif itemsById[item:getId()] or (ui.everyItem:isOn() and not item:isContainer()) then
-      item.lootTries = (item.lootTries or 0) + 1
-      if item.lootTries < 5 then -- if can't be looted within 0.5s then skip it
-        return TargetBot.Looting.lootItem(lootContainers, item)
-      end
-    elseif storage.foodItems and storage.foodItems[1] and lastFoodConsumption + 5000 < now then
-      for _, food in ipairs(storage.foodItems) do
-        if item:getId() == food.id then
-          g_game.use(item)
-          lastFoodConsumption = now
-          return
-        end
-      end
+  local state = getLootContainerState(container)
+  state.active = true
+
+  local plan = buildLootPlan(container)
+  local item = plan.items[1]
+  if item then
+    state.emptyLootScans = 0
+    state.lastLootAction = now
+    item.lootTries = (item.lootTries or 0) + 1
+    if item.lootTries < 12 then -- tolerate slower move/update cycles before skipping
+      return TargetBot.Looting.lootItem(lootContainers, item)
     end
   end
 
+  if plan.food then
+    g_game.use(plan.food)
+    lastFoodConsumption = now
+    return
+  end
+
+  if state.lastLootAction and state.lastLootAction + 1200 > now then
+    waitTill = now + 250
+    return
+  end
+
+  if state.awaitingNextLootPage then
+    state.awaitingNextLootPage = false
+    state.emptyLootScans = 0
+    waitTill = now + 150
+    return
+  end
+
+  if seekNextContainerPage(container) then
+    return
+  end
+
   -- no more items to loot, open next container
+  local nextContainer = plan.containers[1]
   if nextContainer then
     nextContainer.lootTries = (nextContainer.lootTries or 0) + 1
     if nextContainer.lootTries < 2 then -- max 0.6s to open it
@@ -251,11 +367,27 @@ TargetBot.Looting.lootContainer = function(lootContainers, container)
     end
   end
 
+  state.emptyLootScans = state.emptyLootScans + 1
+  if state.emptyLootScans < 3 then
+    waitTill = now + 200
+    return
+  end
+
   -- looting finished, remove container from list
+  state.active = false
   container.lootContainer = false
-  g_game.close(container)
-  table.remove(TargetBot.Looting.list, 1)
+  storage.extras = storage.extras or {}
+  table.remove(TargetBot.Looting.list, storage.extras.lootLast and #TargetBot.Looting.list or 1)
 end
+
+onTextMessage(function(mode, text)
+  if TargetBot.isOff() then return end
+  if #TargetBot.Looting.list == 0 then return end
+  if string.find(text:lower(), "you are not the owner") then -- if we are not the owners of corpse then its a waste of time to try to loot it
+    storage.extras = storage.extras or {}
+    table.remove(TargetBot.Looting.list, storage.extras.lootLast and #TargetBot.Looting.list or 1)
+  end
+end)
 
 TargetBot.Looting.lootItem = function(lootContainers, item)
   if item:isStackable() then
@@ -263,8 +395,8 @@ TargetBot.Looting.lootItem = function(lootContainers, item)
     for _, container in ipairs(lootContainers) do
       for slot, citem in ipairs(container:getItems()) do
         if item:getId() == citem:getId() and citem:getCount() < 100 then
-          g_game.move(item, container:getSlotPosition(slot - 1), count)
-          waitTill = now + 300 -- give it 0.3s to move item
+          g_game.move(item, container:getSlotPosition(slot - 1), math.min(count, 100 - citem:getCount()))
+          waitTill = now + 450 -- give it time to move and refresh item counts
           return
         end
       end
@@ -272,18 +404,23 @@ TargetBot.Looting.lootItem = function(lootContainers, item)
   end
 
   local container = lootContainers[1]
-  g_game.move(item, container:getSlotPosition(container:getItemsCount()), 1)
-  waitTill = now + 300 -- give it 0.3s to move item
+  g_game.move(item, container:getSlotPosition(container:getItemsCount()), item:isStackable() and item:getCount() or 1)
+  waitTill = now + 450 -- give it time to move and refresh item counts
 end
 
 onContainerOpen(function(container, previousContainer)
   if container:getContainerItem():getId() == waitingForContainer then
+    local state = getLootContainerState(container)
+    state.active = true
+    state.emptyLootScans = 0
+    state.lastLootAction = now
     container.lootContainer = true
     waitingForContainer = nil
   end
 end)
 
 onCreatureDisappear(function(creature)
+  if isInPz() then return end
   if not TargetBot.isOn() then return end
   if not creature:isMonster() then return end
   local config = TargetBot.Creature.calculateParams(creature, {}) -- return {craeture, config, danger, priority}
@@ -303,6 +440,21 @@ onCreatureDisappear(function(creature)
     if not container or not container:isContainer() then return end
     if not findPath(player:getPosition(), mpos, 6, {ignoreNonPathable=true, ignoreCreatures=true, ignoreCost=true}) then return end
     table.insert(TargetBot.Looting.list, {pos=mpos, creature=name, container=container:getId(), added=now, tries=0})
+
+    local function distanceFrom(pos)
+      local playerPos = player:getPosition()
+      if not playerPos or not pos or playerPos.z ~= pos.z then
+        return 999
+      end
+      return math.max(math.abs(playerPos.x - pos.x), math.abs(playerPos.y - pos.y))
+    end
+
+    table.sort(TargetBot.Looting.list, function(a,b)
+      a.dist = distanceFrom(a.pos)
+      b.dist = distanceFrom(b.pos)
+
+      return a.dist > b.dist
+    end)
     container:setMarked('#000088')
   end)
 end)
