@@ -95,7 +95,6 @@ local lastLoggedDecision = ""
 local lastSnapshotLog = 0
 local lastSummaryLog = 0
 local lastLogFlush = 0
-local logLines = {}
 local logStats = {
   attackSpells = 0,
   healingSpells = 0,
@@ -113,16 +112,38 @@ local resourceState = {
   huntSamples = 0
 }
 local logDirectory = configDir .. "/logs"
+local logPlayerKey = player:getName():gsub("[^%w_-]", "_")
+_G.KnightBrainLogSessions = _G.KnightBrainLogSessions or {}
+local logSession = _G.KnightBrainLogSessions[logPlayerKey]
+local newLogSession = logSession == nil
+if newLogSession then
+  logSession = {
+    id = os.date("%Y%m%d_%H%M%S"),
+    lines = {}
+  }
+  _G.KnightBrainLogSessions[logPlayerKey] = logSession
+end
+local logLines = logSession.lines
 local logFileName = string.format(
   "knight_brain_%s_%s.log",
-  player:getName():gsub("[^%w_-]", "_"),
-  os.date("%Y%m%d_%H%M%S")
+  logPlayerKey,
+  logSession.id
 )
 local logPath = logDirectory .. "/" .. logFileName
 
 pcall(function()
   if not g_resources.directoryExists(logDirectory) then
     g_resources.makeDir(logDirectory)
+  end
+  if newLogSession then
+    for _, file in ipairs(g_resources.listDirectoryFiles(logDirectory, true, false, false)) do
+      local normalized = file:gsub("\\", "/")
+      local name = normalized:match("([^/]+)$") or normalized
+      if name:match("^knight_brain_" .. logPlayerKey .. "_.*%.log$")
+        and normalized ~= logPath then
+        g_resources.deleteFile(normalized)
+      end
+    end
   end
 end)
 
@@ -150,7 +171,7 @@ local function brainLog(event, details)
   end
 end
 
-brainLog("START", string.format(
+brainLog(newLogSession and "START" or "RELOAD", string.format(
   "player=%s level=%d vocation=%d profile=%s",
   player:getName(),
   player:getLevel(),
