@@ -4,7 +4,11 @@
     "manaReserve": 35,
     "defensiveHp": 45,
     "protectPlayers": true,
-    "survivalAssist": true
+    "survivalAssist": true,
+    "healSpellHp": 85,
+    "healthItemHp": 55,
+    "emergencyHp": 30,
+    "manaItemMp": 65
   },
   "hpitem1": {
     "max": 90,

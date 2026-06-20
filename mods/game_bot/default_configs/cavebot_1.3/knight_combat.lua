@@ -5,7 +5,11 @@ local defaults = {
   manaReserve = 35,
   defensiveHp = 45,
   protectPlayers = true,
-  survivalAssist = true
+  survivalAssist = true,
+  healSpellHp = 85,
+  healthItemHp = 55,
+  emergencyHp = 30,
+  manaItemMp = 65
 }
 
 if type(storage.knightCombat) ~= "table" then
@@ -53,7 +57,10 @@ local spells = {
 local spellReadyAt = {}
 local globalReadyAt = 0
 local survivalLockUntil = 0
-local lastPotionAttempt = 0
+local lastHealthItemAttempt = 0
+local lastManaItemAttempt = 0
+local lastHealingRuneAttempt = 0
+local healingSpellReadyAt = {}
 local lastDecision = "Waiting for target"
 
 UI.Label("Knight Combat Brain")
@@ -90,6 +97,26 @@ UI.TextEdit(tostring(config.defensiveHp), function(widget, text)
   config.defensiveHp = math.max(1, math.min(95, tonumber(text) or defaults.defensiveHp))
 end)
 
+UI.Label("Healing spell below HP %")
+UI.TextEdit(tostring(config.healSpellHp), function(widget, text)
+  config.healSpellHp = math.max(1, math.min(100, tonumber(text) or defaults.healSpellHp))
+end)
+
+UI.Label("Health item below HP %")
+UI.TextEdit(tostring(config.healthItemHp), function(widget, text)
+  config.healthItemHp = math.max(1, math.min(100, tonumber(text) or defaults.healthItemHp))
+end)
+
+UI.Label("Emergency below HP %")
+UI.TextEdit(tostring(config.emergencyHp), function(widget, text)
+  config.emergencyHp = math.max(1, math.min(100, tonumber(text) or defaults.emergencyHp))
+end)
+
+UI.Label("Mana potion below MP %")
+UI.TextEdit(tostring(config.manaItemMp), function(widget, text)
+  config.manaItemMp = math.max(1, math.min(100, tonumber(text) or defaults.manaItemMp))
+end)
+
 local playerSafetyButton
 local function updatePlayerSafetyButton()
   playerSafetyButton:setText("Area near players: " .. (config.protectPlayers and "blocked" or "allowed"))
@@ -113,7 +140,7 @@ end)
 updateSurvivalButton()
 
 UI.Separator()
-UI.Label("HP Bot settings are used by Survival Assist.")
+UI.Label("Restoration is selected from inventory automatically.")
 
 local brainMacro = macro(100, "Knight Combat Brain", function()
   if KnightCombatBrain and KnightCombatBrain.processSurvival then
@@ -208,40 +235,119 @@ end
 
 KnightCombatBrain = {}
 
-local function settingMatches(setting, percent, valueKey)
-  local value = setting and setting[valueKey]
-  return type(setting) == "table"
-    and setting.on == true
-    and value ~= nil
-    and (type(value) ~= "string" or value:len() > 0)
-    and percent >= (tonumber(setting.min) or 0)
-    and percent <= (tonumber(setting.max) or 100)
+local healthPotions = {
+  {id = 23375, level = 200, name = "supreme health potion"},
+  {id = 7643, level = 130, name = "ultimate health potion"},
+  {id = 239, level = 80, name = "great health potion"},
+  {id = 236, level = 50, name = "strong health potion"},
+  {id = 266, level = 0, name = "health potion"},
+  {id = 7876, level = 0, name = "small health potion"}
+}
+
+local manaPotions = {
+  {id = 237, level = 50, name = "strong mana potion"},
+  {id = 268, level = 0, name = "mana potion"}
+}
+
+local healingRunes = {
+  {id = 3160, level = 24, magicLevel = 4, name = "ultimate healing rune"},
+  {id = 3152, level = 15, magicLevel = 1, name = "intense healing rune"}
+}
+
+local function findAvailable(entries)
+  for _, entry in ipairs(entries) do
+    if player:getLevel() >= entry.level
+      and player:getMagicLevel() >= (entry.magicLevel or 0)
+      and g_game.findPlayerItem(entry.id, -1) then
+      return entry
+    end
+  end
+  return nil
 end
 
-local function useConfiguredPotion(settings, percent, label)
-  if lastPotionAttempt + 250 > now then
+local function useRestorationItem(entry, kind)
+  if not entry then
     return false
   end
-  for _, setting in ipairs(settings) do
-    if settingMatches(setting, percent, "item") and tonumber(setting.item) > 100 then
-      TargetBot.useItem(setting.item, setting.subType or 0, player, 250)
-      lastPotionAttempt = now
-      setDecision(label .. " item", combatRow.right:getText())
-      return true
-    end
+
+  local lastAttempt = kind == "mana" and lastManaItemAttempt or lastHealthItemAttempt
+  if lastAttempt + 1000 > now then
+    return false
   end
-  return false
+
+  TargetBot.useItem(entry.id, 0, player, 900)
+  if kind == "mana" then
+    lastManaItemAttempt = now
+  else
+    lastHealthItemAttempt = now
+  end
+  setDecision("Using " .. entry.name, combatRow.right:getText())
+  return true
 end
 
-local function castConfiguredHeal(settings, hpPercent)
-  for _, setting in ipairs(settings) do
-    if settingMatches(setting, hpPercent, "text") and TargetBot.saySpell(setting.text, 900) then
-      survivalLockUntil = now + 900
-      setDecision("Healing: " .. setting.text, combatRow.right:getText())
-      return true
+local function useHealingRune()
+  if lastHealingRuneAttempt + 1000 > now then
+    return false
+  end
+  local rune = findAvailable(healingRunes)
+  if not rune then
+    return false
+  end
+  TargetBot.useItem(rune.id, 0, player, 1000)
+  lastHealingRuneAttempt = now
+  survivalLockUntil = now + 1000
+  setDecision("Using " .. rune.name, combatRow.right:getText())
+  return true
+end
+
+local function castHealingSpell(hpPercent)
+  local candidates = {
+    {
+      key = "intense",
+      words = "exura gran ico",
+      name = "intense wound cleansing",
+      level = 80,
+      mana = 200,
+      cooldown = 600000,
+      emergencyOnly = true
+    },
+    {
+      key = "fair",
+      words = "exura med ico",
+      name = "fair wound cleansing",
+      level = 300,
+      mana = 90,
+      cooldown = 1000
+    },
+    {
+      key = "wound",
+      words = "exura ico",
+      name = "wound cleansing",
+      level = 8,
+      mana = 40,
+      cooldown = 1000
+    }
+  }
+
+  local spell
+  for _, candidate in ipairs(candidates) do
+    if (not candidate.emergencyOnly or hpPercent <= config.emergencyHp)
+      and player:getLevel() >= candidate.level
+      and player:getMana() >= candidate.mana
+      and (healingSpellReadyAt[candidate.key] or 0) <= now then
+      spell = candidate
+      break
     end
   end
-  return false
+
+  if not spell or not TargetBot.saySpell(spell.words, 1000) then
+    return false
+  end
+
+  healingSpellReadyAt[spell.key] = now + spell.cooldown
+  survivalLockUntil = now + 1000
+  setDecision("Casting " .. spell.name, combatRow.right:getText())
+  return true
 end
 
 KnightCombatBrain.handlesSurvival = function()
@@ -255,22 +361,31 @@ KnightCombatBrain.processSurvival = function()
 
   local hpPercent = player:getHealthPercent()
   local manaPercent = manapercent()
-  local usedItem = false
+  local usedHealth = false
   local usedSpell = false
+  local usedRune = false
 
-  if hpPercent <= config.defensiveHp then
-    usedItem = useConfiguredPotion({storage.hpitem2, storage.hpitem1}, hpPercent, "Health")
-    usedSpell = castConfiguredHeal({storage.healing2, storage.healing1}, hpPercent)
-    survivalLockUntil = math.max(survivalLockUntil, now + 500)
-  else
-    usedSpell = castConfiguredHeal({storage.healing2, storage.healing1}, hpPercent)
-    if not usedSpell then
-      usedItem = useConfiguredPotion({storage.hpitem2, storage.hpitem1}, hpPercent, "Health")
+  if hpPercent <= config.healthItemHp then
+    usedHealth = useRestorationItem(findAvailable(healthPotions), "health")
+  end
+
+  if hpPercent <= config.healSpellHp then
+    usedSpell = castHealingSpell(hpPercent)
+    if not usedSpell and hpPercent <= config.emergencyHp then
+      usedRune = useHealingRune()
     end
   end
 
-  local usedMana = useConfiguredPotion({storage.manaitem2, storage.manaitem1}, manaPercent, "Mana")
-  return usedItem or usedSpell or usedMana
+  if hpPercent <= config.emergencyHp then
+    survivalLockUntil = math.max(survivalLockUntil, now + 750)
+  end
+
+  local usedMana = false
+  if manaPercent <= config.manaItemMp then
+    usedMana = useRestorationItem(findAvailable(manaPotions), "mana")
+  end
+
+  return usedHealth or usedSpell or usedRune or usedMana
 end
 
 KnightCombatBrain.process = function(params, targets, isLooting)
