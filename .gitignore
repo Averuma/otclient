@@ -332,3 +332,8 @@ android/app/.cxx/
 android/.gradle/
 android/build/
 luajit-src/
+
+# Local runtime minimap cache
+/data/minimap.otmm
+/minimap.otmm
+/minimap/
