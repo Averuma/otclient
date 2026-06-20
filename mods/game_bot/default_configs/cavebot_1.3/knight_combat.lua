@@ -9,7 +9,12 @@ local defaults = {
   healSpellHp = 85,
   healthItemHp = 55,
   emergencyHp = 30,
-  manaItemMp = 65
+  manaItemMp = 65,
+  autoHaste = true,
+  hasteMinMp = 45,
+  manaTraining = true,
+  trainingStartMp = 98,
+  trainingStopMp = 90
 }
 
 if type(storage.knightCombat) ~= "table" then
@@ -61,6 +66,12 @@ local lastHealthItemAttempt = 0
 local lastManaItemAttempt = 0
 local lastHealingRuneAttempt = 0
 local healingSpellReadyAt = {}
+local utilityReadyAt = {
+  haste = 0,
+  recovery = 0,
+  trainingHeal = 0
+}
+local drainingOverflow = false
 local lastDecision = "Waiting for target"
 
 UI.Label("Knight Combat Brain")
@@ -117,6 +128,21 @@ UI.TextEdit(tostring(config.manaItemMp), function(widget, text)
   config.manaItemMp = math.max(1, math.min(100, tonumber(text) or defaults.manaItemMp))
 end)
 
+UI.Label("Haste minimum MP %")
+UI.TextEdit(tostring(config.hasteMinMp), function(widget, text)
+  config.hasteMinMp = math.max(1, math.min(100, tonumber(text) or defaults.hasteMinMp))
+end)
+
+UI.Label("Mana training start MP %")
+UI.TextEdit(tostring(config.trainingStartMp), function(widget, text)
+  config.trainingStartMp = math.max(1, math.min(100, tonumber(text) or defaults.trainingStartMp))
+end)
+
+UI.Label("Mana training stop MP %")
+UI.TextEdit(tostring(config.trainingStopMp), function(widget, text)
+  config.trainingStopMp = math.max(1, math.min(100, tonumber(text) or defaults.trainingStopMp))
+end)
+
 local playerSafetyButton
 local function updatePlayerSafetyButton()
   playerSafetyButton:setText("Area near players: " .. (config.protectPlayers and "blocked" or "allowed"))
@@ -139,12 +165,38 @@ survivalButton = UI.Button("", function()
 end)
 updateSurvivalButton()
 
+local hasteButton
+local function updateHasteButton()
+  hasteButton:setText("Auto haste: " .. (config.autoHaste and "on" or "off"))
+end
+
+hasteButton = UI.Button("", function()
+  config.autoHaste = not config.autoHaste
+  updateHasteButton()
+end)
+updateHasteButton()
+
+local trainingButton
+local function updateTrainingButton()
+  trainingButton:setText("Mana overflow training: " .. (config.manaTraining and "on" or "off"))
+end
+
+trainingButton = UI.Button("", function()
+  config.manaTraining = not config.manaTraining
+  drainingOverflow = false
+  updateTrainingButton()
+end)
+updateTrainingButton()
+
 UI.Separator()
 UI.Label("Restoration is selected from inventory automatically.")
 
 local brainMacro = macro(100, "Knight Combat Brain", function()
   if KnightCombatBrain and KnightCombatBrain.processSurvival then
     KnightCombatBrain.processSurvival()
+  end
+  if KnightCombatBrain and KnightCombatBrain.processUtility then
+    KnightCombatBrain.processUtility()
   end
   if not g_game.getAttackingCreature() then
     lastDecision = "Waiting for target"
@@ -386,6 +438,87 @@ KnightCombatBrain.processSurvival = function()
   end
 
   return usedHealth or usedSpell or usedRune or usedMana
+end
+
+local function hasMovementReason()
+  local target = g_game.getAttackingCreature()
+  if player:isWalking() then
+    return true
+  end
+  if target then
+    return getDistanceBetween(player:getPosition(), target:getPosition()) > 1
+  end
+  return CaveBot and CaveBot.isOn and CaveBot.isOn()
+end
+
+local function castUtility(words, key, manaCost, cooldown, decision)
+  if player:getMana() < manaCost or utilityReadyAt[key] > now then
+    return false
+  end
+  if not TargetBot.saySpell(words, 1000) then
+    return false
+  end
+  utilityReadyAt[key] = now + cooldown
+  setDecision(decision, combatRow.right:getText())
+  return true
+end
+
+KnightCombatBrain.handlesHaste = function()
+  return brainMacro:isOn() and config.autoHaste and isKnight()
+end
+
+KnightCombatBrain.processUtility = function()
+  if not brainMacro:isOn() or not isKnight() or isInPz() or survivalLockUntil > now then
+    drainingOverflow = false
+    return false
+  end
+
+  local manaPercent = manapercent()
+  local inCombat = g_game.getAttackingCreature() ~= nil or isInFight()
+
+  if config.autoHaste
+    and not hasHaste()
+    and player:getLevel() >= 14
+    and manaPercent >= config.hasteMinMp
+    and player:getMana() >= 60 + manaReserve()
+    and hasMovementReason()
+    and castUtility("utani hur", "haste", 60, 2000, "Auto haste") then
+    return true
+  end
+
+  if not config.manaTraining or inCombat then
+    drainingOverflow = false
+    return false
+  end
+
+  if manaPercent >= config.trainingStartMp then
+    drainingOverflow = true
+  elseif manaPercent <= config.trainingStopMp then
+    drainingOverflow = false
+  end
+
+  if not drainingOverflow then
+    return false
+  end
+
+  if player:getLevel() >= 50
+    and castUtility("utura", "recovery", 75, 60000, "Training ML: recovery") then
+    return true
+  end
+
+  if config.autoHaste
+    and not hasHaste()
+    and player:getLevel() >= 14
+    and castUtility("utani hur", "haste", 60, 2000, "Training ML: haste") then
+    return true
+  end
+
+  if player:getLevel() >= 8
+    and castUtility("exura ico", "trainingHeal", 40, 2000, "Training ML: wound cleansing") then
+    return true
+  end
+
+  return false
 end
 
 KnightCombatBrain.process = function(params, targets, isLooting)

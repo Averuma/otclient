@@ -110,6 +110,9 @@ UI.TextEdit(storage.hasteSpell or "utani hur", function(widget, newText)
 end)
 
 macro(500, "haste", function()
+  if KnightCombatBrain and KnightCombatBrain.handlesHaste and KnightCombatBrain.handlesHaste() then
+    return
+  end
   if hasHaste() then return end
   if TargetBot then
     TargetBot.saySpell(storage.hasteSpell) -- sync spell with targetbot if available

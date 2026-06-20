@@ -8,7 +8,12 @@
     "healSpellHp": 85,
     "healthItemHp": 55,
     "emergencyHp": 30,
-    "manaItemMp": 65
+    "manaItemMp": 65,
+    "autoHaste": true,
+    "hasteMinMp": 45,
+    "manaTraining": true,
+    "trainingStartMp": 98,
+    "trainingStopMp": 90
   },
   "hpitem1": {
     "max": 90,
