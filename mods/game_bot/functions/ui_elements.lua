@@ -227,6 +227,45 @@ UI.TextEdit = function(text, callback, parent)
   return widget
 end
 
+UI.ManualPercent = function(params, callback, parent)
+  local widget = UI.createWidget('ManualPercentPanel', parent)
+  widget.label:setText(params.label or "Percent")
+  widget.manual:setChecked(params.manual == true)
+  widget.value:setText(tostring(params.value or 0))
+  widget.value:setEnabled(params.manual == true)
+
+  widget.manual.onCheckChange = function(_, checked)
+    params.manual = checked
+    widget.value:setEnabled(checked)
+    if checked then
+      params.value = math.max(params.minimum or 0, math.min(params.maximum or 100, tonumber(widget.value:getText()) or params.value or 0))
+    end
+    if callback then
+      callback(widget, params)
+    end
+  end
+
+  widget.value.onTextChange = function(_, text)
+    if widget.updating then
+      return
+    end
+    params.value = math.max(params.minimum or 0, math.min(params.maximum or 100, tonumber(text) or params.value or 0))
+    if callback then
+      callback(widget, params)
+    end
+  end
+
+  widget.setEffectiveValue = function(value)
+    if not params.manual then
+      widget.updating = true
+      widget.value:setText(tostring(math.floor(value + 0.5)))
+      widget.updating = false
+    end
+  end
+
+  return widget
+end
+
 UI.TwoItemsAndSlotPanel = function(params, callback, parent)
   --[[ params:
     on - bool,

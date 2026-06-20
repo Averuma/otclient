@@ -15,7 +15,16 @@
     "autoFood": true,
     "manaTraining": true,
     "trainingStartMp": 98,
-    "trainingStopMp": 90
+    "trainingStopMp": 90,
+    "manualManaReserve": false,
+    "manualDefensiveHp": false,
+    "manualHealSpellHp": false,
+    "manualHealthItemHp": false,
+    "manualEmergencyHp": false,
+    "manualManaItemMp": false,
+    "manualHasteMinMp": false,
+    "manualTrainingStartMp": false,
+    "manualTrainingStopMp": false
   },
   "hpitem1": {
     "max": 90,

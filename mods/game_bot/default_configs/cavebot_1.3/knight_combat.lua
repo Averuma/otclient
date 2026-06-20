@@ -16,7 +16,16 @@ local defaults = {
   autoFood = true,
   manaTraining = true,
   trainingStartMp = 98,
-  trainingStopMp = 90
+  trainingStopMp = 90,
+  manualManaReserve = false,
+  manualDefensiveHp = false,
+  manualHealSpellHp = false,
+  manualHealthItemHp = false,
+  manualEmergencyHp = false,
+  manualManaItemMp = false,
+  manualHasteMinMp = false,
+  manualTrainingStartMp = false,
+  manualTrainingStopMp = false
 }
 
 if type(storage.knightCombat) ~= "table" then
@@ -29,6 +38,7 @@ for key, value in pairs(defaults) do
     config[key] = value
   end
 end
+config.adaptiveSurvival = true
 
 local profiles = {
   Safe = {
@@ -78,6 +88,7 @@ local drainingOverflow = false
 local damageSamples = {}
 local lastObservedHealth = player:getHealth()
 local adaptiveThresholds = nil
+local effectiveThresholds = {}
 local lastDecision = "Waiting for target"
 
 UI.Label("Knight Combat Brain")
@@ -105,50 +116,29 @@ profileButton = UI.Button("", function()
 end)
 updateProfileButton()
 
-UI.Label("Mana reserve %")
-UI.TextEdit(tostring(config.manaReserve), function(widget, text)
-  config.manaReserve = math.max(0, math.min(90, tonumber(text) or defaults.manaReserve))
-end)
+local percentWidgets = {}
+local function addPercentControl(key, manualKey, label, minimum, maximum)
+  percentWidgets[key] = UI.ManualPercent({
+    label = label,
+    value = config[key],
+    manual = config[manualKey],
+    minimum = minimum,
+    maximum = maximum
+  }, function(_, params)
+    config[key] = params.value
+    config[manualKey] = params.manual
+  end)
+end
 
-UI.Label("Defensive HP %")
-UI.TextEdit(tostring(config.defensiveHp), function(widget, text)
-  config.defensiveHp = math.max(1, math.min(95, tonumber(text) or defaults.defensiveHp))
-end)
-
-UI.Label("Healing spell below HP %")
-UI.TextEdit(tostring(config.healSpellHp), function(widget, text)
-  config.healSpellHp = math.max(1, math.min(100, tonumber(text) or defaults.healSpellHp))
-end)
-
-UI.Label("Health item below HP %")
-UI.TextEdit(tostring(config.healthItemHp), function(widget, text)
-  config.healthItemHp = math.max(1, math.min(100, tonumber(text) or defaults.healthItemHp))
-end)
-
-UI.Label("Emergency below HP %")
-UI.TextEdit(tostring(config.emergencyHp), function(widget, text)
-  config.emergencyHp = math.max(1, math.min(100, tonumber(text) or defaults.emergencyHp))
-end)
-
-UI.Label("Mana potion below MP %")
-UI.TextEdit(tostring(config.manaItemMp), function(widget, text)
-  config.manaItemMp = math.max(1, math.min(100, tonumber(text) or defaults.manaItemMp))
-end)
-
-UI.Label("Haste minimum MP %")
-UI.TextEdit(tostring(config.hasteMinMp), function(widget, text)
-  config.hasteMinMp = math.max(1, math.min(100, tonumber(text) or defaults.hasteMinMp))
-end)
-
-UI.Label("Mana training start MP %")
-UI.TextEdit(tostring(config.trainingStartMp), function(widget, text)
-  config.trainingStartMp = math.max(1, math.min(100, tonumber(text) or defaults.trainingStartMp))
-end)
-
-UI.Label("Mana training stop MP %")
-UI.TextEdit(tostring(config.trainingStopMp), function(widget, text)
-  config.trainingStopMp = math.max(1, math.min(100, tonumber(text) or defaults.trainingStopMp))
-end)
+addPercentControl("manaReserve", "manualManaReserve", "Mana reserve", 0, 90)
+addPercentControl("defensiveHp", "manualDefensiveHp", "Defensive HP", 1, 95)
+addPercentControl("healSpellHp", "manualHealSpellHp", "Healing spell HP", 1, 100)
+addPercentControl("healthItemHp", "manualHealthItemHp", "Health item HP", 1, 100)
+addPercentControl("emergencyHp", "manualEmergencyHp", "Emergency HP", 1, 100)
+addPercentControl("manaItemMp", "manualManaItemMp", "Mana potion MP", 1, 100)
+addPercentControl("hasteMinMp", "manualHasteMinMp", "Haste minimum MP", 1, 100)
+addPercentControl("trainingStartMp", "manualTrainingStartMp", "Training start MP", 1, 100)
+addPercentControl("trainingStopMp", "manualTrainingStopMp", "Training stop MP", 1, 100)
 
 local playerSafetyButton
 local function updatePlayerSafetyButton()
@@ -171,18 +161,6 @@ survivalButton = UI.Button("", function()
   updateSurvivalButton()
 end)
 updateSurvivalButton()
-
-local adaptiveButton
-local function updateAdaptiveButton()
-  adaptiveButton:setText("Adaptive survival: " .. (config.adaptiveSurvival and "on" or "off"))
-end
-
-adaptiveButton = UI.Button("", function()
-  config.adaptiveSurvival = not config.adaptiveSurvival
-  adaptiveThresholds = nil
-  updateAdaptiveButton()
-end)
-updateAdaptiveButton()
 
 local hasteButton
 local function updateHasteButton()
@@ -220,7 +198,7 @@ updateTrainingButton()
 
 UI.Separator()
 UI.Label("Restoration is selected from inventory automatically.")
-UI.Label("HP/MP percentages above are fallback limits.")
+UI.Label("Check a percentage to override the Brain.")
 
 local brainMacro = macro(100, "Knight Combat Brain", function()
   if KnightCombatBrain and KnightCombatBrain.processSurvival then
@@ -294,7 +272,8 @@ local function countFrontMonsters()
 end
 
 local function manaReserve()
-  return math.floor(player:getMaxMana() * config.manaReserve / 100)
+  local reservePercent = effectiveThresholds.reserve or config.manaReserve
+  return math.floor(player:getMaxMana() * reservePercent / 100)
 end
 
 local function canCast(key)
@@ -470,17 +449,6 @@ end
 
 local function calculateAdaptiveThresholds()
   local totalDamage, largestHit = updateDamageTelemetry()
-  if not config.adaptiveSurvival then
-    return {
-      heal = config.healSpellHp,
-      item = config.healthItemHp,
-      emergency = config.emergencyHp,
-      mana = config.manaItemMp,
-      defensive = config.defensiveHp,
-      pressure = "manual"
-    }
-  end
-
   local maxHealth = math.max(1, player:getMaxHealth())
   local adjacent = countMonsters(1)
   local nearby = countMonsters(3)
@@ -497,27 +465,37 @@ local function calculateAdaptiveThresholds()
     heal = clamp(65 + risk * 0.55, 60, 95),
     item = clamp(40 + risk * 0.7, 35, 90),
     emergency = clamp(23 + risk * 0.55, 20, 75),
-    mana = clamp(math.max(config.manaReserve + 12, 52 + adjacent * 5 + damagePercent * 0.3), 45, 88),
+    reserve = clamp(25 + adjacent * 4 + damagePercent * 0.35, 25, 65),
+    haste = clamp(35 + adjacent * 3 + damagePercent * 0.2, 35, 72),
+    trainingStart = 98,
+    trainingStop = 90,
     pressure = "stable"
   }
+  thresholds.mana = clamp(math.max(thresholds.reserve + 12, 52 + adjacent * 5 + damagePercent * 0.3), 45, 88)
 
   if timeToDeath < 5 then
     thresholds.heal = 95
     thresholds.item = 90
     thresholds.emergency = 75
     thresholds.mana = 88
+    thresholds.reserve = 65
+    thresholds.haste = 72
     thresholds.pressure = "critical"
   elseif timeToDeath < 9 then
     thresholds.heal = math.max(thresholds.heal, 92)
     thresholds.item = math.max(thresholds.item, 80)
     thresholds.emergency = math.max(thresholds.emergency, 60)
     thresholds.mana = math.max(thresholds.mana, 82)
+    thresholds.reserve = math.max(thresholds.reserve, 55)
+    thresholds.haste = math.max(thresholds.haste, 64)
     thresholds.pressure = "high"
   elseif timeToDeath < 15 or risk >= 35 then
     thresholds.heal = math.max(thresholds.heal, 86)
     thresholds.item = math.max(thresholds.item, 68)
     thresholds.emergency = math.max(thresholds.emergency, 48)
     thresholds.mana = math.max(thresholds.mana, 74)
+    thresholds.reserve = math.max(thresholds.reserve, 45)
+    thresholds.haste = math.max(thresholds.haste, 55)
     thresholds.pressure = "pressure"
   elseif risk >= 15 then
     thresholds.pressure = "guarded"
@@ -526,11 +504,39 @@ local function calculateAdaptiveThresholds()
   thresholds.item = math.min(thresholds.item, thresholds.heal)
   thresholds.emergency = math.min(thresholds.emergency, thresholds.item)
   thresholds.defensive = clamp(math.max(thresholds.emergency + 8, thresholds.item - 5), 35, 85)
+
+  local overrides = {
+    heal = {"manualHealSpellHp", "healSpellHp"},
+    item = {"manualHealthItemHp", "healthItemHp"},
+    emergency = {"manualEmergencyHp", "emergencyHp"},
+    mana = {"manualManaItemMp", "manaItemMp"},
+    defensive = {"manualDefensiveHp", "defensiveHp"},
+    reserve = {"manualManaReserve", "manaReserve"},
+    haste = {"manualHasteMinMp", "hasteMinMp"},
+    trainingStart = {"manualTrainingStartMp", "trainingStartMp"},
+    trainingStop = {"manualTrainingStopMp", "trainingStopMp"}
+  }
+  for thresholdKey, override in pairs(overrides) do
+    if config[override[1]] then
+      thresholds[thresholdKey] = config[override[2]]
+    end
+  end
+
   return thresholds
 end
 
 KnightCombatBrain.processSurvival = function()
   adaptiveThresholds = calculateAdaptiveThresholds()
+  effectiveThresholds = adaptiveThresholds
+  percentWidgets.manaReserve:setEffectiveValue(adaptiveThresholds.reserve)
+  percentWidgets.defensiveHp:setEffectiveValue(adaptiveThresholds.defensive)
+  percentWidgets.healSpellHp:setEffectiveValue(adaptiveThresholds.heal)
+  percentWidgets.healthItemHp:setEffectiveValue(adaptiveThresholds.item)
+  percentWidgets.emergencyHp:setEffectiveValue(adaptiveThresholds.emergency)
+  percentWidgets.manaItemMp:setEffectiveValue(adaptiveThresholds.mana)
+  percentWidgets.hasteMinMp:setEffectiveValue(adaptiveThresholds.haste)
+  percentWidgets.trainingStartMp:setEffectiveValue(adaptiveThresholds.trainingStart)
+  percentWidgets.trainingStopMp:setEffectiveValue(adaptiveThresholds.trainingStop)
   adaptiveRow.right:setText(string.format(
     "H%d I%d E%d M%d %s",
     adaptiveThresholds.heal,
@@ -654,7 +660,7 @@ KnightCombatBrain.processUtility = function()
   if config.autoHaste
     and not hasHaste()
     and player:getLevel() >= 14
-    and manaPercent >= config.hasteMinMp
+    and manaPercent >= (effectiveThresholds.haste or config.hasteMinMp)
     and player:getMana() >= 60 + manaReserve()
     and hasMovementReason()
     and castUtility("utani hur", "haste", 60, 2000, "Auto haste") then
@@ -666,9 +672,11 @@ KnightCombatBrain.processUtility = function()
     return false
   end
 
-  if manaPercent >= config.trainingStartMp then
+  local trainingStart = effectiveThresholds.trainingStart or config.trainingStartMp
+  local trainingStop = effectiveThresholds.trainingStop or config.trainingStopMp
+  if manaPercent >= trainingStart then
     drainingOverflow = true
-  elseif manaPercent <= config.trainingStopMp then
+  elseif manaPercent <= trainingStop then
     drainingOverflow = false
   end
 

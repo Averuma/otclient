@@ -286,6 +286,35 @@ LabelAndTextEditPanel < Panel
     anchors.bottom: parent.bottom
     anchors.right: parent.right
 
+ManualPercentPanel < Panel
+  height: 22
+  padding: 1
+
+  CheckBox
+    id: manual
+    anchors.left: parent.left
+    anchors.verticalCenter: parent.verticalCenter
+    margin-left: 2
+    tooltip: Use my value instead of the Brain
+
+  Label
+    id: label
+    anchors.left: prev.right
+    anchors.top: parent.top
+    anchors.bottom: parent.bottom
+    anchors.right: value.left
+    margin-left: 3
+    margin-right: 3
+    text-align: left
+    text-wrap: true
+
+  BotTextEdit
+    id: value
+    anchors.right: parent.right
+    anchors.top: parent.top
+    anchors.bottom: parent.bottom
+    width: 42
+
 SwitchAndButtonPanel < Panel
   height: 20
   padding: 1
