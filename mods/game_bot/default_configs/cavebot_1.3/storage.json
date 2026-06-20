@@ -13,6 +13,7 @@
     "autoHaste": true,
     "hasteMinMp": 45,
     "autoFood": true,
+    "brainLogging": true,
     "manaTraining": true,
     "trainingStartMp": 98,
     "trainingStopMp": 90,

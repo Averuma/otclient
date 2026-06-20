@@ -14,6 +14,7 @@ local defaults = {
   autoHaste = true,
   hasteMinMp = 45,
   autoFood = true,
+  brainLogging = true,
   manaTraining = true,
   trainingStartMp = 98,
   trainingStopMp = 90,
@@ -90,6 +91,66 @@ local lastObservedHealth = player:getHealth()
 local adaptiveThresholds = nil
 local effectiveThresholds = {}
 local lastDecision = "Waiting for target"
+local lastLoggedDecision = ""
+local lastSnapshotLog = 0
+local lastSummaryLog = 0
+local lastLogFlush = 0
+local logLines = {}
+local logStats = {
+  attackSpells = 0,
+  healingSpells = 0,
+  healthItems = 0,
+  manaItems = 0,
+  healingRunes = 0,
+  foods = 0,
+  haste = 0,
+  trainingSpells = 0
+}
+local logDirectory = configDir .. "/logs"
+local logFileName = string.format(
+  "knight_brain_%s_%s.log",
+  player:getName():gsub("[^%w_-]", "_"),
+  os.date("%Y%m%d_%H%M%S")
+)
+local logPath = logDirectory .. "/" .. logFileName
+
+pcall(function()
+  if not g_resources.directoryExists(logDirectory) then
+    g_resources.makeDir(logDirectory)
+  end
+end)
+
+local function flushBrainLog()
+  if not config.brainLogging or #logLines == 0 then
+    return
+  end
+  pcall(function()
+    g_resources.writeFileContents(logPath, table.concat(logLines, "\n") .. "\n")
+  end)
+end
+
+local function brainLog(event, details)
+  if not config.brainLogging then
+    return
+  end
+  table.insert(logLines, string.format(
+    "%s | %-10s | %s",
+    os.date("%Y-%m-%d %H:%M:%S"),
+    event,
+    details or ""
+  ))
+  if #logLines % 10 == 0 then
+    flushBrainLog()
+  end
+end
+
+brainLog("START", string.format(
+  "player=%s level=%d vocation=%d profile=%s",
+  player:getName(),
+  player:getLevel(),
+  player:getVocation(),
+  config.profile
+))
 
 UI.Label("Knight Combat Brain")
 local statusRow = UI.DualLabel("Decision", lastDecision, {maxWidth = 62})
@@ -184,6 +245,27 @@ foodButton = UI.Button("", function()
 end)
 updateFoodButton()
 
+local loggingButton
+local function updateLoggingButton()
+  loggingButton:setText("Brain logging: " .. (config.brainLogging and "on" or "off"))
+end
+
+loggingButton = UI.Button("", function()
+  config.brainLogging = not config.brainLogging
+  updateLoggingButton()
+  if config.brainLogging then
+    brainLog("LOGGING", "enabled")
+  else
+    flushBrainLog()
+  end
+end)
+updateLoggingButton()
+
+UI.Button("Open Brain logs", function()
+  flushBrainLog()
+  g_platform.openDir(g_resources.getWriteDir() .. logDirectory)
+end)
+
 local trainingButton
 local function updateTrainingButton()
   trainingButton:setText("Mana overflow training: " .. (config.manaTraining and "on" or "off"))
@@ -215,6 +297,25 @@ local brainMacro = macro(100, "Knight Combat Brain", function()
     statusRow.right:setText(lastDecision)
     combatRow.right:setText("-")
   end
+  if lastSummaryLog + 60000 <= now then
+    lastSummaryLog = now
+    brainLog("SUMMARY", string.format(
+      "attack=%d heal=%d hpItems=%d mpItems=%d runes=%d food=%d haste=%d training=%d",
+      logStats.attackSpells,
+      logStats.healingSpells,
+      logStats.healthItems,
+      logStats.manaItems,
+      logStats.healingRunes,
+      logStats.foods,
+      logStats.haste,
+      logStats.trainingSpells
+    ))
+    flushBrainLog()
+  end
+  if lastLogFlush + 5000 <= now then
+    lastLogFlush = now
+    flushBrainLog()
+  end
 end)
 
 local function setDecision(text, combat)
@@ -222,6 +323,15 @@ local function setDecision(text, combat)
   statusRow.right:setText(text)
   if combat then
     combatRow.right:setText(combat)
+  end
+  if text ~= lastLoggedDecision then
+    lastLoggedDecision = text
+    brainLog("DECISION", string.format(
+      "%s hp=%d%% mp=%d%%",
+      text,
+      player:getHealthPercent(),
+      manapercent()
+    ))
   end
 end
 
@@ -294,6 +404,13 @@ local function cast(key)
   end
   spellReadyAt[key] = now + spell.cooldown
   globalReadyAt = now + 2000
+  logStats.attackSpells = logStats.attackSpells + 1
+  brainLog("ATTACK", string.format(
+    "spell=%s hp=%d%% mp=%d%%",
+    spell.words,
+    player:getHealthPercent(),
+    manapercent()
+  ))
   setDecision(spell.words, combatRow.right:getText())
   return true
 end
@@ -343,9 +460,19 @@ local function useRestorationItem(entry, kind)
   TargetBot.useItem(entry.id, 0, player, 900)
   if kind == "mana" then
     lastManaItemAttempt = now
+    logStats.manaItems = logStats.manaItems + 1
   else
     lastHealthItemAttempt = now
+    logStats.healthItems = logStats.healthItems + 1
   end
+  brainLog("ITEM", string.format(
+    "kind=%s name=%s id=%d hp=%d%% mp=%d%%",
+    kind,
+    entry.name,
+    entry.id,
+    player:getHealthPercent(),
+    manapercent()
+  ))
   setDecision("Using " .. entry.name, combatRow.right:getText())
   return true
 end
@@ -361,6 +488,14 @@ local function useHealingRune()
   TargetBot.useItem(rune.id, 0, player, 1000)
   lastHealingRuneAttempt = now
   survivalLockUntil = now + 1000
+  logStats.healingRunes = logStats.healingRunes + 1
+  brainLog("RUNE", string.format(
+    "name=%s id=%d hp=%d%% mp=%d%%",
+    rune.name,
+    rune.id,
+    player:getHealthPercent(),
+    manapercent()
+  ))
   setDecision("Using " .. rune.name, combatRow.right:getText())
   return true
 end
@@ -412,6 +547,13 @@ local function castHealingSpell(hpPercent)
 
   healingSpellReadyAt[spell.key] = now + spell.cooldown
   survivalLockUntil = now + 1000
+  logStats.healingSpells = logStats.healingSpells + 1
+  brainLog("HEAL", string.format(
+    "spell=%s hp=%d%% mp=%d%%",
+    spell.words,
+    player:getHealthPercent(),
+    manapercent()
+  ))
   setDecision("Casting " .. spell.name, combatRow.right:getText())
   return true
 end
@@ -504,6 +646,12 @@ local function calculateAdaptiveThresholds()
   thresholds.item = math.min(thresholds.item, thresholds.heal)
   thresholds.emergency = math.min(thresholds.emergency, thresholds.item)
   thresholds.defensive = clamp(math.max(thresholds.emergency + 8, thresholds.item - 5), 35, 85)
+  thresholds.damage5 = totalDamage
+  thresholds.largestHit = largestHit
+  thresholds.adjacent = adjacent
+  thresholds.nearby = nearby
+  thresholds.timeToDeath = timeToDeath
+  thresholds.risk = risk
 
   local overrides = {
     heal = {"manualHealSpellHp", "healSpellHp"},
@@ -545,6 +693,27 @@ KnightCombatBrain.processSurvival = function()
     adaptiveThresholds.mana,
     adaptiveThresholds.pressure
   ))
+  if lastSnapshotLog + 10000 <= now then
+    lastSnapshotLog = now
+    brainLog("SNAPSHOT", string.format(
+      "hp=%d%% mp=%d%% damage5=%d largest=%d adjacent=%d nearby=%d ttk=%.1f risk=%.1f thresholds=H%d/I%d/E%d/M%d/D%d/R%d pressure=%s",
+      player:getHealthPercent(),
+      manapercent(),
+      adaptiveThresholds.damage5,
+      adaptiveThresholds.largestHit,
+      adaptiveThresholds.adjacent,
+      adaptiveThresholds.nearby,
+      adaptiveThresholds.timeToDeath,
+      adaptiveThresholds.risk,
+      adaptiveThresholds.heal,
+      adaptiveThresholds.item,
+      adaptiveThresholds.emergency,
+      adaptiveThresholds.mana,
+      adaptiveThresholds.defensive,
+      adaptiveThresholds.reserve,
+      adaptiveThresholds.pressure
+    ))
+  end
 
   if not KnightCombatBrain.handlesSurvival() or isInPz() then
     return false
@@ -580,21 +749,21 @@ KnightCombatBrain.processSurvival = function()
 end
 
 local commonFoods = {
-  {id = 3582, name = "ham"},
-  {id = 3731, name = "fire mushroom"},
-  {id = 3726, name = "orange mushroom"},
-  {id = 22187, name = "roasted meat"},
-  {id = 21146, name = "glooth steak"},
-  {id = 3725, name = "brown mushroom"},
-  {id = 12310, name = "haunch of boar"},
-  {id = 24382, name = "bug meat"},
-  {id = 3593, name = "melon"},
-  {id = 3580, name = "northern pike"},
-  {id = 3577, name = "meat"},
-  {id = 3578, name = "fish"},
-  {id = 3600, name = "bread"},
-  {id = 3607, name = "cheese"},
-  {id = 3602, name = "brown bread"}
+  {id = 3731, name = "fire mushroom", seconds = 432},
+  {id = 3582, name = "ham", seconds = 360},
+  {id = 3726, name = "orange mushroom", seconds = 360},
+  {id = 22187, name = "roasted meat", seconds = 300},
+  {id = 21146, name = "glooth steak", seconds = 300},
+  {id = 3725, name = "brown mushroom", seconds = 264},
+  {id = 12310, name = "haunch of boar", seconds = 240},
+  {id = 24382, name = "bug meat", seconds = 240},
+  {id = 3593, name = "melon", seconds = 240},
+  {id = 3580, name = "northern pike", seconds = 204},
+  {id = 3577, name = "meat", seconds = 180},
+  {id = 3578, name = "fish", seconds = 144},
+  {id = 3600, name = "bread", seconds = 120},
+  {id = 3607, name = "cheese", seconds = 108},
+  {id = 3602, name = "brown bread", seconds = 96}
 }
 
 KnightCombatBrain.handlesFood = function()
@@ -602,22 +771,43 @@ KnightCombatBrain.handlesFood = function()
 end
 
 KnightCombatBrain.processFood = function()
-  if not KnightCombatBrain.handlesFood() or not isHungry() or lastFoodAttempt + 3000 > now then
+  if not KnightCombatBrain.handlesFood() or lastFoodAttempt + 1500 > now then
     return false
   end
 
+  local regenerationTime = player:getRegenerationTime()
+  if regenerationTime > 180 then
+    return false
+  end
+
+  local remainingCapacity = math.max(0, 1200 - regenerationTime)
   for _, food in ipairs(commonFoods) do
     local item = g_game.findPlayerItem(food.id, -1)
-    if item then
+    if item and food.seconds <= remainingCapacity then
       g_game.use(item)
       lastFoodAttempt = now
+      logStats.foods = logStats.foods + 1
+      brainLog("FOOD", string.format(
+        "name=%s id=%d before=%ds expected=%ds",
+        food.name,
+        food.id,
+        regenerationTime,
+        math.min(1200, regenerationTime + food.seconds)
+      ))
       setDecision("Eating " .. food.name, combatRow.right:getText())
       return true
     end
   end
 
-  lastFoodAttempt = now
-  setDecision("Hungry: no common food", combatRow.right:getText())
+  if lastFoodAttempt + 30000 <= now then
+    lastFoodAttempt = now
+    brainLog("FOOD", string.format(
+      "no suitable common food regeneration=%ds capacity=%ds",
+      regenerationTime,
+      remainingCapacity
+    ))
+    setDecision("No suitable common food", combatRow.right:getText())
+  end
   return false
 end
 
@@ -640,6 +830,18 @@ local function castUtility(words, key, manaCost, cooldown, decision)
     return false
   end
   utilityReadyAt[key] = now + cooldown
+  if key == "haste" then
+    logStats.haste = logStats.haste + 1
+  else
+    logStats.trainingSpells = logStats.trainingSpells + 1
+  end
+  brainLog("UTILITY", string.format(
+    "key=%s spell=%s hp=%d%% mp=%d%%",
+    key,
+    words,
+    player:getHealthPercent(),
+    manapercent()
+  ))
   setDecision(decision, combatRow.right:getText())
   return true
 end
