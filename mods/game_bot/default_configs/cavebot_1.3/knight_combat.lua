@@ -106,6 +106,12 @@ local logStats = {
   haste = 0,
   trainingSpells = 0
 }
+local resourceState = {
+  pending = {},
+  lastNotice = {},
+  huntRisk = 0,
+  huntSamples = 0
+}
 local logDirectory = configDir .. "/logs"
 local logFileName = string.format(
   "knight_brain_%s_%s.log",
@@ -282,6 +288,10 @@ UI.Separator()
 UI.Label("Restoration is selected from inventory automatically.")
 UI.Label("Check a percentage to override the Brain.")
 
+if storage._macros["Knight Combat Brain"] == nil then
+  storage._macros["Knight Combat Brain"] = true
+end
+
 local brainMacro = macro(100, "Knight Combat Brain", function()
   if KnightCombatBrain and KnightCombatBrain.processSurvival then
     KnightCombatBrain.processSurvival()
@@ -418,33 +428,157 @@ end
 KnightCombatBrain = {}
 
 local healthPotions = {
-  {id = 23375, level = 200, name = "supreme health potion"},
-  {id = 7643, level = 130, name = "ultimate health potion"},
-  {id = 239, level = 80, name = "great health potion"},
-  {id = 236, level = 50, name = "strong health potion"},
-  {id = 266, level = 0, name = "health potion"},
-  {id = 7876, level = 0, name = "small health potion"}
+  {id = 23375, level = 200, name = "supreme health potion", estimate = 875},
+  {id = 7643, level = 130, name = "ultimate health potion", estimate = 650},
+  {id = 239, level = 80, name = "great health potion", estimate = 425},
+  {id = 236, level = 50, name = "strong health potion", estimate = 250},
+  {id = 266, level = 0, name = "health potion", estimate = 125},
+  {id = 7876, level = 0, name = "small health potion", estimate = 75}
 }
 
 local manaPotions = {
-  {id = 237, level = 50, name = "strong mana potion"},
-  {id = 268, level = 0, name = "mana potion"}
+  {id = 237, level = 50, name = "strong mana potion", estimate = 150},
+  {id = 268, level = 0, name = "mana potion", estimate = 100}
 }
 
 local healingRunes = {
-  {id = 3160, level = 24, magicLevel = 4, name = "ultimate healing rune"},
-  {id = 3152, level = 15, magicLevel = 1, name = "intense healing rune"}
+  {id = 3160, level = 24, magicLevel = 4, name = "ultimate healing rune", estimate = 250},
+  {id = 3152, level = 15, magicLevel = 1, name = "intense healing rune", estimate = 140}
 }
+
+local healingSpells = {
+  {
+    key = "intense",
+    words = "exura gran ico",
+    name = "intense wound cleansing",
+    level = 80,
+    mana = 200,
+    cooldown = 600000,
+    emergencyOnly = true,
+    estimate = 700
+  },
+  {
+    key = "fair",
+    words = "exura med ico",
+    name = "fair wound cleansing",
+    level = 300,
+    mana = 90,
+    cooldown = 1000,
+    estimate = 450
+  },
+  {
+    key = "wound",
+    words = "exura ico",
+    name = "wound cleansing",
+    level = 8,
+    mana = 40,
+    cooldown = 1000,
+    estimate = math.max(45, player:getLevel() * 1.5 + player:getMagicLevel() * 4)
+  }
+}
+
+local function inventoryCount(itemId)
+  local count = 0
+  for _, container in pairs(g_game.getContainers()) do
+    for _, item in ipairs(container:getItems()) do
+      if item:getId() == itemId then
+        count = count + math.max(1, item:getCount())
+      end
+    end
+  end
+  return count
+end
 
 local function findAvailable(entries)
   for _, entry in ipairs(entries) do
     if player:getLevel() >= entry.level
       and player:getMagicLevel() >= (entry.magicLevel or 0)
       and g_game.findPlayerItem(entry.id, -1) then
+      entry.stock = inventoryCount(entry.id)
       return entry
     end
   end
   return nil
+end
+
+local function pressureRank(pressure)
+  local ranks = {stable = 1, guarded = 2, pressure = 3, high = 4, critical = 5}
+  return ranks[pressure] or 1
+end
+
+local function resourceNotice(key, details)
+  if (resourceState.lastNotice[key] or 0) + 5000 > now then
+    return
+  end
+  resourceState.lastNotice[key] = now
+  brainLog("RESOURCE", details)
+end
+
+local function beginRestorationLearning(key, before, entry)
+  resourceState.pending[key] = {
+    time = now,
+    before = before,
+    peak = before,
+    entry = entry
+  }
+end
+
+local function updateRestorationLearning()
+  for key, pending in pairs(resourceState.pending) do
+    local current = key == "mana" and player:getMana() or player:getHealth()
+    pending.peak = math.max(pending.peak, current)
+    if pending.time + 900 <= now then
+      local gain = pending.peak - pending.before
+      if gain > 0 then
+        pending.entry.estimate = math.max(1, pending.entry.estimate * 0.75 + gain * 0.25)
+        brainLog("LEARN", string.format(
+          "resource=%s source=%s netGain=%d estimate=%.1f",
+          key,
+          pending.entry.name,
+          gain,
+          pending.entry.estimate
+        ))
+      end
+      resourceState.pending[key] = nil
+    end
+  end
+end
+
+local function restorationIsEfficient(entry, kind, threshold, pressure)
+  local current = kind == "mana" and player:getMana() or player:getHealth()
+  local maximum = kind == "mana" and player:getMaxMana() or player:getMaxHealth()
+  local percent = maximum > 0 and current * 100 / maximum or 100
+  if percent > threshold then
+    return false, "above threshold"
+  end
+
+  local missing = math.max(0, maximum - current)
+  local urgency = pressureRank(pressure)
+  local minimumEfficiency = urgency >= 5 and 0.25 or urgency >= 4 and 0.4 or urgency >= 3 and 0.6 or 0.75
+  local stock = entry.stock or inventoryCount(entry.id)
+  if stock <= 3 and urgency < 4 then
+    minimumEfficiency = math.max(minimumEfficiency, 0.95)
+  elseif stock <= 10 and urgency < 3 then
+    minimumEfficiency = math.max(minimumEfficiency, 0.85)
+  end
+
+  local requiredMissing = math.min(maximum, entry.estimate * minimumEfficiency)
+  if missing < requiredMissing then
+    return false, string.format(
+      "waste missing=%d expected=%.0f stock=%d efficiency=%d%%",
+      missing,
+      entry.estimate,
+      stock,
+      minimumEfficiency * 100
+    )
+  end
+  return true, string.format(
+    "missing=%d expected=%.0f stock=%d efficiency=%d%%",
+    missing,
+    entry.estimate,
+    stock,
+    minimumEfficiency * 100
+  )
 end
 
 local function useRestorationItem(entry, kind)
@@ -457,7 +591,9 @@ local function useRestorationItem(entry, kind)
     return false
   end
 
+  local before = kind == "mana" and player:getMana() or player:getHealth()
   TargetBot.useItem(entry.id, 0, player, 900)
+  beginRestorationLearning(kind, before, entry)
   if kind == "mana" then
     lastManaItemAttempt = now
     logStats.manaItems = logStats.manaItems + 1
@@ -466,10 +602,12 @@ local function useRestorationItem(entry, kind)
     logStats.healthItems = logStats.healthItems + 1
   end
   brainLog("ITEM", string.format(
-    "kind=%s name=%s id=%d hp=%d%% mp=%d%%",
+    "kind=%s name=%s id=%d stock=%d estimate=%.0f hp=%d%% mp=%d%%",
     kind,
     entry.name,
     entry.id,
+    entry.stock or 0,
+    entry.estimate,
     player:getHealthPercent(),
     manapercent()
   ))
@@ -477,7 +615,7 @@ local function useRestorationItem(entry, kind)
   return true
 end
 
-local function useHealingRune()
+local function useHealingRune(pressure)
   if lastHealingRuneAttempt + 1000 > now then
     return false
   end
@@ -485,14 +623,28 @@ local function useHealingRune()
   if not rune then
     return false
   end
+  local efficient, reason = restorationIsEfficient(
+    rune,
+    "health",
+    adaptiveThresholds.emergency,
+    pressure
+  )
+  if not efficient then
+    resourceNotice("rune-waste", "skip=" .. rune.name .. " reason=" .. reason)
+    return false
+  end
+  local before = player:getHealth()
   TargetBot.useItem(rune.id, 0, player, 1000)
+  beginRestorationLearning("health", before, rune)
   lastHealingRuneAttempt = now
   survivalLockUntil = now + 1000
   logStats.healingRunes = logStats.healingRunes + 1
   brainLog("RUNE", string.format(
-    "name=%s id=%d hp=%d%% mp=%d%%",
+    "name=%s id=%d stock=%d estimate=%.0f hp=%d%% mp=%d%%",
     rune.name,
     rune.id,
+    rune.stock or 0,
+    rune.estimate,
     player:getHealthPercent(),
     manapercent()
   ))
@@ -500,44 +652,28 @@ local function useHealingRune()
   return true
 end
 
-local function castHealingSpell(hpPercent)
-  local candidates = {
-    {
-      key = "intense",
-      words = "exura gran ico",
-      name = "intense wound cleansing",
-      level = 80,
-      mana = 200,
-      cooldown = 600000,
-      emergencyOnly = true
-    },
-    {
-      key = "fair",
-      words = "exura med ico",
-      name = "fair wound cleansing",
-      level = 300,
-      mana = 90,
-      cooldown = 1000
-    },
-    {
-      key = "wound",
-      words = "exura ico",
-      name = "wound cleansing",
-      level = 8,
-      mana = 40,
-      cooldown = 1000
-    }
-  }
-
+local function castHealingSpell(hpPercent, pressure)
   local spell
-  for _, candidate in ipairs(candidates) do
+  for _, candidate in ipairs(healingSpells) do
     local emergencyThreshold = adaptiveThresholds and adaptiveThresholds.emergency or config.emergencyHp
     if (not candidate.emergencyOnly or hpPercent <= emergencyThreshold)
       and player:getLevel() >= candidate.level
       and player:getMana() >= candidate.mana
       and (healingSpellReadyAt[candidate.key] or 0) <= now then
-      spell = candidate
-      break
+      local missing = player:getMaxHealth() - player:getHealth()
+      local urgency = pressureRank(pressure)
+      local minimumEfficiency = urgency >= 5 and 0.2 or urgency >= 4 and 0.35 or urgency >= 3 and 0.55 or 0.7
+      if missing >= candidate.estimate * minimumEfficiency then
+        spell = candidate
+        break
+      end
+      resourceNotice("heal-waste", string.format(
+        "skip=%s missing=%d expected=%.0f efficiency=%d%%",
+        candidate.words,
+        missing,
+        candidate.estimate,
+        minimumEfficiency * 100
+      ))
     end
   end
 
@@ -545,12 +681,15 @@ local function castHealingSpell(hpPercent)
     return false
   end
 
+  local before = player:getHealth()
   healingSpellReadyAt[spell.key] = now + spell.cooldown
   survivalLockUntil = now + 1000
+  beginRestorationLearning("health", before, spell)
   logStats.healingSpells = logStats.healingSpells + 1
   brainLog("HEAL", string.format(
-    "spell=%s hp=%d%% mp=%d%%",
+    "spell=%s estimate=%.0f hp=%d%% mp=%d%%",
     spell.words,
+    spell.estimate,
     player:getHealthPercent(),
     manapercent()
   ))
@@ -602,44 +741,50 @@ local function calculateAdaptiveThresholds()
     + largestHitPercent * 0.8
     + adjacent * 8
     + math.max(0, nearby - adjacent) * 3
+  resourceState.huntSamples = resourceState.huntSamples + 1
+  local learningRate = resourceState.huntSamples < 100 and 0.05 or 0.015
+  resourceState.huntRisk = resourceState.huntRisk
+    + (risk - resourceState.huntRisk) * learningRate
+  local adaptiveRisk = risk * 0.8 + resourceState.huntRisk * 0.2
 
   local thresholds = {
-    heal = clamp(65 + risk * 0.55, 60, 95),
-    item = clamp(40 + risk * 0.7, 35, 90),
-    emergency = clamp(23 + risk * 0.55, 20, 75),
+    heal = clamp(65 + adaptiveRisk * 0.45, 60, 93),
+    item = clamp(35 + adaptiveRisk * 0.5, 30, 80),
+    emergency = clamp(23 + adaptiveRisk * 0.55, 20, 75),
     reserve = clamp(25 + adjacent * 4 + damagePercent * 0.35, 25, 65),
     haste = clamp(35 + adjacent * 3 + damagePercent * 0.2, 35, 72),
+    mana = 30,
     trainingStart = 98,
     trainingStop = 90,
     pressure = "stable"
   }
-  thresholds.mana = clamp(math.max(thresholds.reserve + 12, 52 + adjacent * 5 + damagePercent * 0.3), 45, 88)
 
   if timeToDeath < 5 then
-    thresholds.heal = 95
-    thresholds.item = 90
+    thresholds.heal = 93
+    thresholds.item = 80
     thresholds.emergency = 75
-    thresholds.mana = 88
+    thresholds.mana = 50
     thresholds.reserve = 65
     thresholds.haste = 72
     thresholds.pressure = "critical"
   elseif timeToDeath < 9 then
-    thresholds.heal = math.max(thresholds.heal, 92)
-    thresholds.item = math.max(thresholds.item, 80)
+    thresholds.heal = math.max(thresholds.heal, 88)
+    thresholds.item = math.max(thresholds.item, 70)
     thresholds.emergency = math.max(thresholds.emergency, 60)
-    thresholds.mana = math.max(thresholds.mana, 82)
+    thresholds.mana = 50
     thresholds.reserve = math.max(thresholds.reserve, 55)
     thresholds.haste = math.max(thresholds.haste, 64)
     thresholds.pressure = "high"
-  elseif timeToDeath < 15 or risk >= 35 then
-    thresholds.heal = math.max(thresholds.heal, 86)
-    thresholds.item = math.max(thresholds.item, 68)
+  elseif timeToDeath < 15 or adaptiveRisk >= 35 then
+    thresholds.heal = math.max(thresholds.heal, 80)
+    thresholds.item = math.max(thresholds.item, 55)
     thresholds.emergency = math.max(thresholds.emergency, 48)
-    thresholds.mana = math.max(thresholds.mana, 74)
+    thresholds.mana = 40
     thresholds.reserve = math.max(thresholds.reserve, 45)
     thresholds.haste = math.max(thresholds.haste, 55)
     thresholds.pressure = "pressure"
-  elseif risk >= 15 then
+  elseif adaptiveRisk >= 15 then
+    thresholds.mana = 35
     thresholds.pressure = "guarded"
   end
 
@@ -652,6 +797,7 @@ local function calculateAdaptiveThresholds()
   thresholds.nearby = nearby
   thresholds.timeToDeath = timeToDeath
   thresholds.risk = risk
+  thresholds.huntRisk = resourceState.huntRisk
 
   local overrides = {
     heal = {"manualHealSpellHp", "healSpellHp"},
@@ -674,6 +820,7 @@ local function calculateAdaptiveThresholds()
 end
 
 KnightCombatBrain.processSurvival = function()
+  updateRestorationLearning()
   adaptiveThresholds = calculateAdaptiveThresholds()
   effectiveThresholds = adaptiveThresholds
   percentWidgets.manaReserve:setEffectiveValue(adaptiveThresholds.reserve)
@@ -696,7 +843,7 @@ KnightCombatBrain.processSurvival = function()
   if lastSnapshotLog + 10000 <= now then
     lastSnapshotLog = now
     brainLog("SNAPSHOT", string.format(
-      "hp=%d%% mp=%d%% damage5=%d largest=%d adjacent=%d nearby=%d ttk=%.1f risk=%.1f thresholds=H%d/I%d/E%d/M%d/D%d/R%d pressure=%s",
+      "hp=%d%% mp=%d%% damage5=%d largest=%d adjacent=%d nearby=%d ttk=%.1f risk=%.1f huntRisk=%.1f thresholds=H%d/I%d/E%d/M%d/D%d/R%d pressure=%s",
       player:getHealthPercent(),
       manapercent(),
       adaptiveThresholds.damage5,
@@ -705,6 +852,7 @@ KnightCombatBrain.processSurvival = function()
       adaptiveThresholds.nearby,
       adaptiveThresholds.timeToDeath,
       adaptiveThresholds.risk,
+      adaptiveThresholds.huntRisk,
       adaptiveThresholds.heal,
       adaptiveThresholds.item,
       adaptiveThresholds.emergency,
@@ -724,25 +872,85 @@ KnightCombatBrain.processSurvival = function()
   local usedHealth = false
   local usedSpell = false
   local usedRune = false
+  local pressure = adaptiveThresholds.pressure
+  local emergency = hpPercent <= adaptiveThresholds.emergency
+  local healthPotion = findAvailable(healthPotions)
 
-  if hpPercent <= adaptiveThresholds.item then
-    usedHealth = useRestorationItem(findAvailable(healthPotions), "health")
-  end
-
-  if hpPercent <= adaptiveThresholds.heal then
-    usedSpell = castHealingSpell(hpPercent)
-    if not usedSpell and hpPercent <= adaptiveThresholds.emergency then
-      usedRune = useHealingRune()
+  if not resourceState.pending.health then
+    if emergency then
+      if healthPotion then
+        local efficient, reason = restorationIsEfficient(
+          healthPotion,
+          "health",
+          adaptiveThresholds.item,
+          pressure
+        )
+        if efficient then
+          usedHealth = useRestorationItem(healthPotion, "health")
+        else
+          resourceNotice("health-waste", "skip=" .. healthPotion.name .. " reason=" .. reason)
+        end
+      else
+        resourceNotice("health-missing", "no usable health potion found")
+      end
+      if not usedHealth then
+        usedRune = useHealingRune(pressure)
+      end
+      if not usedHealth and not usedRune then
+        usedSpell = castHealingSpell(hpPercent, pressure)
+      end
+    elseif hpPercent <= adaptiveThresholds.heal then
+      usedSpell = castHealingSpell(hpPercent, pressure)
+      if not usedSpell and hpPercent <= adaptiveThresholds.item and healthPotion then
+        local efficient, reason = restorationIsEfficient(
+          healthPotion,
+          "health",
+          adaptiveThresholds.item,
+          pressure
+        )
+        if efficient then
+          usedHealth = useRestorationItem(healthPotion, "health")
+        else
+          resourceNotice("health-waste", "skip=" .. healthPotion.name .. " reason=" .. reason)
+        end
+      end
     end
   end
 
-  if hpPercent <= adaptiveThresholds.emergency then
+  if emergency then
     survivalLockUntil = math.max(survivalLockUntil, now + 750)
   end
 
   local usedMana = false
-  if manaPercent <= adaptiveThresholds.mana then
-    usedMana = useRestorationItem(findAvailable(manaPotions), "mana")
+  local inCombat = g_game.getAttackingCreature() ~= nil or isInFight()
+  local manaPotion = findAvailable(manaPotions)
+  if not resourceState.pending.mana
+    and resourceState.manaRearmBelow
+    and manaPercent <= resourceState.manaRearmBelow then
+    resourceState.manaRearmBelow = nil
+  end
+  if not resourceState.pending.mana
+    and not resourceState.manaRearmBelow
+    and manaPercent <= adaptiveThresholds.mana
+    and (inCombat or manaPercent <= 15) then
+    if manaPotion then
+      local efficient, reason = restorationIsEfficient(
+        manaPotion,
+        "mana",
+        adaptiveThresholds.mana,
+        pressure
+      )
+      if efficient then
+        usedMana = useRestorationItem(manaPotion, "mana")
+        if usedMana then
+          resourceState.manaRearmBelow = math.max(5, adaptiveThresholds.mana - 10)
+        end
+      else
+        resourceNotice("mana-waste", "skip=" .. manaPotion.name .. " reason=" .. reason)
+      end
+    else
+      resourceNotice("mana-missing", "no usable mana potion found")
+    end
   end
 
   return usedHealth or usedSpell or usedRune or usedMana
@@ -945,7 +1153,7 @@ KnightCombatBrain.process = function(params, targets, isLooting)
     return true
   end
 
-  if manaPercent <= config.manaReserve then
+  if manaPercent <= (effectiveThresholds.reserve or config.manaReserve) then
     setDecision("Preserving mana", summary)
     return true
   end
