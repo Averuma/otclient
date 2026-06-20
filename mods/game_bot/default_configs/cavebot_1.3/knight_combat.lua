@@ -4,7 +4,8 @@ local defaults = {
   profile = "Balanced",
   manaReserve = 35,
   defensiveHp = 45,
-  protectPlayers = true
+  protectPlayers = true,
+  survivalAssist = true
 }
 
 if type(storage.knightCombat) ~= "table" then
@@ -51,6 +52,8 @@ local spells = {
 
 local spellReadyAt = {}
 local globalReadyAt = 0
+local survivalLockUntil = 0
+local lastPotionAttempt = 0
 local lastDecision = "Waiting for target"
 
 UI.Label("Knight Combat Brain")
@@ -98,10 +101,24 @@ playerSafetyButton = UI.Button("", function()
 end)
 updatePlayerSafetyButton()
 
-UI.Separator()
-UI.Label("Disable TargetBot attack spells while this is active.")
+local survivalButton
+local function updateSurvivalButton()
+  survivalButton:setText("Survival assist: " .. (config.survivalAssist and "on" or "off"))
+end
 
-local brainMacro = macro(500, "Knight Combat Brain", function()
+survivalButton = UI.Button("", function()
+  config.survivalAssist = not config.survivalAssist
+  updateSurvivalButton()
+end)
+updateSurvivalButton()
+
+UI.Separator()
+UI.Label("HP Bot settings are used by Survival Assist.")
+
+local brainMacro = macro(100, "Knight Combat Brain", function()
+  if KnightCombatBrain and KnightCombatBrain.processSurvival then
+    KnightCombatBrain.processSurvival()
+  end
   if not g_game.getAttackingCreature() then
     lastDecision = "Waiting for target"
     statusRow.right:setText(lastDecision)
@@ -191,6 +208,71 @@ end
 
 KnightCombatBrain = {}
 
+local function settingMatches(setting, percent, valueKey)
+  local value = setting and setting[valueKey]
+  return type(setting) == "table"
+    and setting.on == true
+    and value ~= nil
+    and (type(value) ~= "string" or value:len() > 0)
+    and percent >= (tonumber(setting.min) or 0)
+    and percent <= (tonumber(setting.max) or 100)
+end
+
+local function useConfiguredPotion(settings, percent, label)
+  if lastPotionAttempt + 250 > now then
+    return false
+  end
+  for _, setting in ipairs(settings) do
+    if settingMatches(setting, percent, "item") and tonumber(setting.item) > 100 then
+      TargetBot.useItem(setting.item, setting.subType or 0, player, 250)
+      lastPotionAttempt = now
+      setDecision(label .. " item", combatRow.right:getText())
+      return true
+    end
+  end
+  return false
+end
+
+local function castConfiguredHeal(settings, hpPercent)
+  for _, setting in ipairs(settings) do
+    if settingMatches(setting, hpPercent, "text") and TargetBot.saySpell(setting.text, 900) then
+      survivalLockUntil = now + 900
+      setDecision("Healing: " .. setting.text, combatRow.right:getText())
+      return true
+    end
+  end
+  return false
+end
+
+KnightCombatBrain.handlesSurvival = function()
+  return brainMacro:isOn() and config.survivalAssist and isKnight()
+end
+
+KnightCombatBrain.processSurvival = function()
+  if not KnightCombatBrain.handlesSurvival() or isInPz() then
+    return false
+  end
+
+  local hpPercent = player:getHealthPercent()
+  local manaPercent = manapercent()
+  local usedItem = false
+  local usedSpell = false
+
+  if hpPercent <= config.defensiveHp then
+    usedItem = useConfiguredPotion({storage.hpitem2, storage.hpitem1}, hpPercent, "Health")
+    usedSpell = castConfiguredHeal({storage.healing2, storage.healing1}, hpPercent)
+    survivalLockUntil = math.max(survivalLockUntil, now + 500)
+  else
+    usedSpell = castConfiguredHeal({storage.healing2, storage.healing1}, hpPercent)
+    if not usedSpell then
+      usedItem = useConfiguredPotion({storage.hpitem2, storage.hpitem1}, hpPercent, "Health")
+    end
+  end
+
+  local usedMana = useConfiguredPotion({storage.manaitem2, storage.manaitem1}, manaPercent, "Mana")
+  return usedItem or usedSpell or usedMana
+end
+
 KnightCombatBrain.process = function(params, targets, isLooting)
   if not brainMacro:isOn() or not isKnight() then
     return false
@@ -218,6 +300,11 @@ KnightCombatBrain.process = function(params, targets, isLooting)
   local profile = profiles[config.profile] or profiles.Balanced
   local summary = adjacent .. " close, " .. manaPercent .. "% mana"
   combatRow.right:setText(summary)
+
+  if survivalLockUntil > now then
+    setDecision("Survival priority", summary)
+    return true
+  end
 
   if hpPercent <= config.defensiveHp then
     setDecision("Defensive: preserve HP", summary)

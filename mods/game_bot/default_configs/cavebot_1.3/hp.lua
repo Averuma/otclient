@@ -19,6 +19,9 @@ end
 -- create 2 healing widgets
 for _, healingInfo in ipairs({storage.healing1, storage.healing2}) do
   local healingmacro = macro(20, function()
+    if KnightCombatBrain and KnightCombatBrain.handlesSurvival and KnightCombatBrain.handlesSurvival() then
+      return
+    end
     local hp = player:getHealthPercent()
     if healingInfo.max >= hp and hp >= healingInfo.min then
       if TargetBot then
@@ -55,6 +58,9 @@ end
 
 for i, healingInfo in ipairs({storage.hpitem1, storage.hpitem2, storage.manaitem1, storage.manaitem2}) do
   local healingmacro = macro(20, function()
+    if KnightCombatBrain and KnightCombatBrain.handlesSurvival and KnightCombatBrain.handlesSurvival() then
+      return
+    end
     local hp = i <= 2 and player:getHealthPercent() or math.min(100, math.floor(100 * (player:getMana() / player:getMaxMana())))
     if healingInfo.max >= hp and hp >= healingInfo.min then
       if TargetBot then

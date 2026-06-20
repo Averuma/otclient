@@ -3,7 +3,8 @@
     "profile": "Balanced",
     "manaReserve": 35,
     "defensiveHp": 45,
-    "protectPlayers": true
+    "protectPlayers": true,
+    "survivalAssist": true
   },
   "hpitem1": {
     "max": 90,
