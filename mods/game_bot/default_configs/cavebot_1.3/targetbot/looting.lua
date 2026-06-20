@@ -91,6 +91,23 @@ local waitingForContainer = nil
 local status = ""
 local lastFoodConsumption = 0
 local lootContainerStates = {}
+local currencyIds = {
+  [3031] = true, -- gold coin
+  [3035] = true, -- platinum coin
+  [3043] = true  -- crystal coin
+}
+local autoDepositGeneration = 0
+
+local function queueGoldDeposit()
+  autoDepositGeneration = autoDepositGeneration + 1
+  local generation = autoDepositGeneration
+  schedule(700, function()
+    if generation ~= autoDepositGeneration or not g_game.isOnline() then
+      return
+    end
+    say("!deposit auto")
+  end)
+end
 
 local function getLootContainerState(container)
   local id = container:getId()
@@ -390,6 +407,10 @@ onTextMessage(function(mode, text)
 end)
 
 TargetBot.Looting.lootItem = function(lootContainers, item)
+  if currencyIds[item:getId()] then
+    queueGoldDeposit()
+  end
+
   if item:isStackable() then
     local count = item:getCount()
     for _, container in ipairs(lootContainers) do
