@@ -255,12 +255,20 @@ UI.ManualPercent = function(params, callback, parent)
     end
   end
 
-  widget.setEffectiveValue = function(value)
-    if not params.manual then
-      widget.updating = true
-      widget.value:setText(tostring(math.floor(value + 0.5)))
-      widget.updating = false
+  widget.setEffectiveValue = function(_, value)
+    local numericValue = tonumber(value)
+    if params.manual or not numericValue then
+      return
     end
+
+    local text = tostring(math.floor(numericValue + 0.5))
+    if widget.value:getText() == text then
+      return
+    end
+
+    widget.updating = true
+    widget.value:setText(text)
+    widget.updating = false
   end
 
   return widget
