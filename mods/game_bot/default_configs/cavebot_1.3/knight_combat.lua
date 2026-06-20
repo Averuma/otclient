@@ -6,6 +6,7 @@ local defaults = {
   defensiveHp = 45,
   protectPlayers = true,
   survivalAssist = true,
+  adaptiveSurvival = true,
   healSpellHp = 85,
   healthItemHp = 55,
   emergencyHp = 30,
@@ -74,11 +75,15 @@ local utilityReadyAt = {
 }
 local lastFoodAttempt = 0
 local drainingOverflow = false
+local damageSamples = {}
+local lastObservedHealth = player:getHealth()
+local adaptiveThresholds = nil
 local lastDecision = "Waiting for target"
 
 UI.Label("Knight Combat Brain")
 local statusRow = UI.DualLabel("Decision", lastDecision, {maxWidth = 62})
 local combatRow = UI.DualLabel("Combat", "-", {maxWidth = 62})
+local adaptiveRow = UI.DualLabel("Adaptive", "-", {maxWidth = 62})
 
 local profileButton
 local profileOrder = {"Safe", "Balanced", "Aggressive"}
@@ -167,6 +172,18 @@ survivalButton = UI.Button("", function()
 end)
 updateSurvivalButton()
 
+local adaptiveButton
+local function updateAdaptiveButton()
+  adaptiveButton:setText("Adaptive survival: " .. (config.adaptiveSurvival and "on" or "off"))
+end
+
+adaptiveButton = UI.Button("", function()
+  config.adaptiveSurvival = not config.adaptiveSurvival
+  adaptiveThresholds = nil
+  updateAdaptiveButton()
+end)
+updateAdaptiveButton()
+
 local hasteButton
 local function updateHasteButton()
   hasteButton:setText("Auto haste: " .. (config.autoHaste and "on" or "off"))
@@ -203,6 +220,7 @@ updateTrainingButton()
 
 UI.Separator()
 UI.Label("Restoration is selected from inventory automatically.")
+UI.Label("HP/MP percentages above are fallback limits.")
 
 local brainMacro = macro(100, "Knight Combat Brain", function()
   if KnightCombatBrain and KnightCombatBrain.processSurvival then
@@ -399,7 +417,8 @@ local function castHealingSpell(hpPercent)
 
   local spell
   for _, candidate in ipairs(candidates) do
-    if (not candidate.emergencyOnly or hpPercent <= config.emergencyHp)
+    local emergencyThreshold = adaptiveThresholds and adaptiveThresholds.emergency or config.emergencyHp
+    if (not candidate.emergencyOnly or hpPercent <= emergencyThreshold)
       and player:getLevel() >= candidate.level
       and player:getMana() >= candidate.mana
       and (healingSpellReadyAt[candidate.key] or 0) <= now then
@@ -422,7 +441,105 @@ KnightCombatBrain.handlesSurvival = function()
   return brainMacro:isOn() and config.survivalAssist and isKnight()
 end
 
+local function clamp(value, minimum, maximum)
+  return math.max(minimum, math.min(maximum, math.floor(value + 0.5)))
+end
+
+local function updateDamageTelemetry()
+  local health = player:getHealth()
+  if lastObservedHealth and health < lastObservedHealth then
+    table.insert(damageSamples, {
+      time = now,
+      amount = lastObservedHealth - health
+    })
+  end
+  lastObservedHealth = health
+
+  while damageSamples[1] and damageSamples[1].time + 5000 < now do
+    table.remove(damageSamples, 1)
+  end
+
+  local totalDamage = 0
+  local largestHit = 0
+  for _, sample in ipairs(damageSamples) do
+    totalDamage = totalDamage + sample.amount
+    largestHit = math.max(largestHit, sample.amount)
+  end
+  return totalDamage, largestHit
+end
+
+local function calculateAdaptiveThresholds()
+  local totalDamage, largestHit = updateDamageTelemetry()
+  if not config.adaptiveSurvival then
+    return {
+      heal = config.healSpellHp,
+      item = config.healthItemHp,
+      emergency = config.emergencyHp,
+      mana = config.manaItemMp,
+      defensive = config.defensiveHp,
+      pressure = "manual"
+    }
+  end
+
+  local maxHealth = math.max(1, player:getMaxHealth())
+  local adjacent = countMonsters(1)
+  local nearby = countMonsters(3)
+  local damagePercent = totalDamage * 100 / maxHealth
+  local largestHitPercent = largestHit * 100 / maxHealth
+  local damagePerSecond = totalDamage / 5
+  local timeToDeath = damagePerSecond > 0 and player:getHealth() / damagePerSecond or 999
+  local risk = damagePercent * 1.15
+    + largestHitPercent * 0.8
+    + adjacent * 8
+    + math.max(0, nearby - adjacent) * 3
+
+  local thresholds = {
+    heal = clamp(65 + risk * 0.55, 60, 95),
+    item = clamp(40 + risk * 0.7, 35, 90),
+    emergency = clamp(23 + risk * 0.55, 20, 75),
+    mana = clamp(math.max(config.manaReserve + 12, 52 + adjacent * 5 + damagePercent * 0.3), 45, 88),
+    pressure = "stable"
+  }
+
+  if timeToDeath < 5 then
+    thresholds.heal = 95
+    thresholds.item = 90
+    thresholds.emergency = 75
+    thresholds.mana = 88
+    thresholds.pressure = "critical"
+  elseif timeToDeath < 9 then
+    thresholds.heal = math.max(thresholds.heal, 92)
+    thresholds.item = math.max(thresholds.item, 80)
+    thresholds.emergency = math.max(thresholds.emergency, 60)
+    thresholds.mana = math.max(thresholds.mana, 82)
+    thresholds.pressure = "high"
+  elseif timeToDeath < 15 or risk >= 35 then
+    thresholds.heal = math.max(thresholds.heal, 86)
+    thresholds.item = math.max(thresholds.item, 68)
+    thresholds.emergency = math.max(thresholds.emergency, 48)
+    thresholds.mana = math.max(thresholds.mana, 74)
+    thresholds.pressure = "pressure"
+  elseif risk >= 15 then
+    thresholds.pressure = "guarded"
+  end
+
+  thresholds.item = math.min(thresholds.item, thresholds.heal)
+  thresholds.emergency = math.min(thresholds.emergency, thresholds.item)
+  thresholds.defensive = clamp(math.max(thresholds.emergency + 8, thresholds.item - 5), 35, 85)
+  return thresholds
+end
+
 KnightCombatBrain.processSurvival = function()
+  adaptiveThresholds = calculateAdaptiveThresholds()
+  adaptiveRow.right:setText(string.format(
+    "H%d I%d E%d M%d %s",
+    adaptiveThresholds.heal,
+    adaptiveThresholds.item,
+    adaptiveThresholds.emergency,
+    adaptiveThresholds.mana,
+    adaptiveThresholds.pressure
+  ))
+
   if not KnightCombatBrain.handlesSurvival() or isInPz() then
     return false
   end
@@ -433,23 +550,23 @@ KnightCombatBrain.processSurvival = function()
   local usedSpell = false
   local usedRune = false
 
-  if hpPercent <= config.healthItemHp then
+  if hpPercent <= adaptiveThresholds.item then
     usedHealth = useRestorationItem(findAvailable(healthPotions), "health")
   end
 
-  if hpPercent <= config.healSpellHp then
+  if hpPercent <= adaptiveThresholds.heal then
     usedSpell = castHealingSpell(hpPercent)
-    if not usedSpell and hpPercent <= config.emergencyHp then
+    if not usedSpell and hpPercent <= adaptiveThresholds.emergency then
       usedRune = useHealingRune()
     end
   end
 
-  if hpPercent <= config.emergencyHp then
+  if hpPercent <= adaptiveThresholds.emergency then
     survivalLockUntil = math.max(survivalLockUntil, now + 750)
   end
 
   local usedMana = false
-  if manaPercent <= config.manaItemMp then
+  if manaPercent <= adaptiveThresholds.mana then
     usedMana = useRestorationItem(findAvailable(manaPotions), "mana")
   end
 
@@ -612,7 +729,8 @@ KnightCombatBrain.process = function(params, targets, isLooting)
     return true
   end
 
-  if hpPercent <= config.defensiveHp then
+  local defensiveThreshold = adaptiveThresholds and adaptiveThresholds.defensive or config.defensiveHp
+  if hpPercent <= defensiveThreshold then
     setDecision("Defensive: preserve HP", summary)
     return true
   end
