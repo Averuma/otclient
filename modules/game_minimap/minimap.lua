@@ -40,6 +40,36 @@ local function onPositionChange()
     refreshVirtualFloors()
 end
 
+local function loadTibiaMapsPngMinimap()
+    if not g_resources.directoryExists('/minimap') then
+        return false
+    end
+
+    local loaded = 0
+    local files = g_resources.listDirectoryFiles('/minimap', false, true)
+
+    for _, file in ipairs(files) do
+        local lowerFile = file:lower()
+
+        if lowerFile:match('%.png$') and not lowerFile:find('waypointcost') then
+            local x, y, z = file:match('(%d+)_(%d+)_(%d+)%.png$')
+
+            if x and y and z then
+                local path = file
+
+                if path:sub(1, 1) ~= '/' then
+                    path = '/minimap/' .. path
+                end
+
+                g_minimap.loadImage(path, { x = tonumber(x), y = tonumber(y), z = tonumber(z) }, 1.0)
+                loaded = loaded + 1
+            end
+        end
+    end
+
+    return loaded > 0
+end
+
 mapController = Controller:new()
 mapController:setUI('minimap', modules.game_interface.getMainRightPanel())
 
@@ -126,8 +156,18 @@ function mapController:onGameStart()
         loadFnc = g_map.loadOtcm
     end
 
+    local loaded = false
+
     if g_resources.fileExists(minimapFile) then
-        loadFnc(minimapFile)
+        loaded = loadFnc(minimapFile)
+
+        if loaded == nil then
+            loaded = true
+        end
+    end
+
+    if not loaded and otmm and loadTibiaMapsPngMinimap() then
+        g_minimap.saveOtmm('/minimap.otmm')
     end
 
     self.ui.minimapBorder.minimap:load()

@@ -1,6 +1,36 @@
 local UI = nil
 local virtualFloor = 7
 
+local function loadTibiaMapsPngMinimap()
+    if not g_resources.directoryExists('/minimap') then
+        return false
+    end
+
+    local loaded = 0
+    local files = g_resources.listDirectoryFiles('/minimap', false, true)
+
+    for _, file in ipairs(files) do
+        local lowerFile = file:lower()
+
+        if lowerFile:match('%.png$') and not lowerFile:find('waypointcost') then
+            local x, y, z = file:match('(%d+)_(%d+)_(%d+)%.png$')
+
+            if x and y and z then
+                local path = file
+
+                if path:sub(1, 1) ~= '/' then
+                    path = '/minimap/' .. path
+                end
+
+                g_minimap.loadImage(path, { x = tonumber(x), y = tonumber(y), z = tonumber(z) }, 1.0)
+                loaded = loaded + 1
+            end
+        end
+    end
+
+    return loaded > 0
+end
+
 function showMap()
     g_minimap.saveOtmm('/minimap.otmm')
     UI = g_ui.loadUI("map", contentContainer)
@@ -41,6 +71,11 @@ function Cyclopedia.loadMap()
 
     if not loaded and g_resources.fileExists(minimapFile) then
         loaded = g_minimap.loadOtmm(minimapFile)
+    end
+
+    if not loaded and loadTibiaMapsPngMinimap() then
+        loaded = true
+        g_minimap.saveOtmm(minimapFile)
     end
 
     if not loaded then
