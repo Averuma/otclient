@@ -117,33 +117,42 @@ local function getPageLabelHistory()
     return tonumber(currentPage), tonumber(pageCount)
 end
 
+local function setStoreImage(widget, path, isIcon)
+    if isIcon then
+        widget:setIcon(path)
+    else
+        widget:setImageSource(path)
+    end
+end
+
 local function setImagenHttp(widget, url, isIcon)
-    if GameStore.website.IMAGES_URL then
-        HTTP.downloadImage(GameStore.website.IMAGES_URL .. url, function(path, err)
+    local relativePath = tostring(url or ""):gsub("^/+", "")
+    local remoteBaseUrl = GameStore.website.IMAGES_URL
+    local hasRemoteBaseUrl = type(remoteBaseUrl) == "string" and remoteBaseUrl:match("%S") ~= nil
+
+    if hasRemoteBaseUrl then
+        local remoteUrl = remoteBaseUrl:gsub("/+$", "") .. "/" .. relativePath
+        HTTP.downloadImage(remoteUrl, function(path, err)
             if err then
-                g_logger.warning("HTTP error: " .. err .. " - " .. GameStore.website.IMAGES_URL .. url)
-                if isIcon then
-                    widget:setIcon("/game_store/images/dynamic-image-error")
-                else
-                    widget:setImageSource("/game_store/images/dynamic-image-error")
+                g_logger.warning("HTTP error: " .. err .. " - " .. remoteUrl)
+                setStoreImage(widget, "/game_store/images/dynamic-image-error", isIcon)
+                if not isIcon then
                     widget:setImageFixedRatio(false)
                 end
                 return
             end
-            if isIcon then
-                widget:setIcon(path)
-            else
-                widget:setImageSource(path)
-            end
+            setStoreImage(widget, path, isIcon)
         end)
     else
-        if not g_resources.fileExists("/game_store/images/" .. url) then
-            widget:setImageSource("/game_store/images/dynamic-image-error")
-            widget:setImageFixedRatio(false)
+        local localPath = "/game_store/images/" .. relativePath
+        if not g_resources.fileExists(localPath) then
+            setStoreImage(widget, "/game_store/images/dynamic-image-error", isIcon)
+            if not isIcon then
+                widget:setImageFixedRatio(false)
+            end
         else
-            widget:setImageSource("/game_store/images/" .. url)
+            setStoreImage(widget, localPath, isIcon)
         end
-
     end
 end
 
@@ -536,7 +545,8 @@ end
 
 function onStoreInit(url, coinsPacketSize)
     if not GameStore.website.IMAGES_URL then
-        GameStore.website.IMAGES_URL = url
+        local remoteBaseUrl = type(url) == "string" and url:match("^%s*(.-)%s*$") or ""
+        GameStore.website.IMAGES_URL = remoteBaseUrl ~= "" and remoteBaseUrl or nil
     end
 end
 
