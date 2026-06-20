@@ -149,6 +149,9 @@ foodContainer:setHeight(35)
 foodContainer:setItems(storage.foodItems)
 
 macro(10000, "eat food", function()
+  if KnightCombatBrain and KnightCombatBrain.handlesFood and KnightCombatBrain.handlesFood() then
+    return
+  end
   if not storage.foodItems[1] then return end
   -- search for food in containers
   for _, container in pairs(g_game.getContainers()) do

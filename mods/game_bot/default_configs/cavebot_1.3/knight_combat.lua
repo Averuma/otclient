@@ -12,6 +12,7 @@ local defaults = {
   manaItemMp = 65,
   autoHaste = true,
   hasteMinMp = 45,
+  autoFood = true,
   manaTraining = true,
   trainingStartMp = 98,
   trainingStopMp = 90
@@ -71,6 +72,7 @@ local utilityReadyAt = {
   recovery = 0,
   trainingHeal = 0
 }
+local lastFoodAttempt = 0
 local drainingOverflow = false
 local lastDecision = "Waiting for target"
 
@@ -176,6 +178,17 @@ hasteButton = UI.Button("", function()
 end)
 updateHasteButton()
 
+local foodButton
+local function updateFoodButton()
+  foodButton:setText("Auto food: " .. (config.autoFood and "on" or "off"))
+end
+
+foodButton = UI.Button("", function()
+  config.autoFood = not config.autoFood
+  updateFoodButton()
+end)
+updateFoodButton()
+
 local trainingButton
 local function updateTrainingButton()
   trainingButton:setText("Mana overflow training: " .. (config.manaTraining and "on" or "off"))
@@ -194,6 +207,9 @@ UI.Label("Restoration is selected from inventory automatically.")
 local brainMacro = macro(100, "Knight Combat Brain", function()
   if KnightCombatBrain and KnightCombatBrain.processSurvival then
     KnightCombatBrain.processSurvival()
+  end
+  if KnightCombatBrain and KnightCombatBrain.processFood then
+    KnightCombatBrain.processFood()
   end
   if KnightCombatBrain and KnightCombatBrain.processUtility then
     KnightCombatBrain.processUtility()
@@ -438,6 +454,48 @@ KnightCombatBrain.processSurvival = function()
   end
 
   return usedHealth or usedSpell or usedRune or usedMana
+end
+
+local commonFoods = {
+  {id = 3582, name = "ham"},
+  {id = 3731, name = "fire mushroom"},
+  {id = 3726, name = "orange mushroom"},
+  {id = 22187, name = "roasted meat"},
+  {id = 21146, name = "glooth steak"},
+  {id = 3725, name = "brown mushroom"},
+  {id = 12310, name = "haunch of boar"},
+  {id = 24382, name = "bug meat"},
+  {id = 3593, name = "melon"},
+  {id = 3580, name = "northern pike"},
+  {id = 3577, name = "meat"},
+  {id = 3578, name = "fish"},
+  {id = 3600, name = "bread"},
+  {id = 3607, name = "cheese"},
+  {id = 3602, name = "brown bread"}
+}
+
+KnightCombatBrain.handlesFood = function()
+  return brainMacro:isOn() and config.autoFood and isKnight()
+end
+
+KnightCombatBrain.processFood = function()
+  if not KnightCombatBrain.handlesFood() or not isHungry() or lastFoodAttempt + 3000 > now then
+    return false
+  end
+
+  for _, food in ipairs(commonFoods) do
+    local item = g_game.findPlayerItem(food.id, -1)
+    if item then
+      g_game.use(item)
+      lastFoodAttempt = now
+      setDecision("Eating " .. food.name, combatRow.right:getText())
+      return true
+    end
+  end
+
+  lastFoodAttempt = now
+  setDecision("Hungry: no common food", combatRow.right:getText())
+  return false
 end
 
 local function hasMovementReason()
