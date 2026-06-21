@@ -347,6 +347,10 @@ function EnterGame.firstShow()
             EnterGame.postCacheInfo()
             EnterGame.postEventScheduler()
             -- EnterGame.postShowOff() -- myacc/znote no send login.php
+        end
+    end
+    if Services and (Services.boosted or Services.status) then
+        if g_modules.getModule("client_bottommenu"):isLoaded() then
             EnterGame.postShowCreatureBoost()
         end
     end
@@ -533,7 +537,7 @@ function EnterGame.postShowCreatureBoost()
         modules.client_bottommenu.setBoostedCreatureAndBoss(response)
     end
 
-    HTTP.post(Services.status, json.encode({
+    HTTP.post(Services.boosted or Services.status, json.encode({
         type = requestType
     }), onRecvInfo, false)
 end
