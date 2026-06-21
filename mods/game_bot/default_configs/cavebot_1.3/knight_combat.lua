@@ -113,15 +113,15 @@ local resourceState = {
 }
 local logDirectory = configDir .. "/logs"
 local logPlayerKey = player:getName():gsub("[^%w_-]", "_")
-_G.KnightBrainLogSessions = _G.KnightBrainLogSessions or {}
-local logSession = _G.KnightBrainLogSessions[logPlayerKey]
+KnightBrainLogSessions = KnightBrainLogSessions or {}
+local logSession = KnightBrainLogSessions[logPlayerKey]
 local newLogSession = logSession == nil
 if newLogSession then
   logSession = {
     id = os.date("%Y%m%d_%H%M%S"),
     lines = {}
   }
-  _G.KnightBrainLogSessions[logPlayerKey] = logSession
+  KnightBrainLogSessions[logPlayerKey] = logSession
 end
 local logLines = logSession.lines
 local logFileName = string.format(
