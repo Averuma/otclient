@@ -57,9 +57,10 @@ function init()
     boostedWindow = bottomMenu:recursiveGetChildById('boostedWindow')
     monsterOutfit = boostedWindow:recursiveGetChildById('creature')
     bossOutfit = boostedWindow:recursiveGetChildById('boss')
+    monsterImage = boostedWindow:recursiveGetChildById('monsterImage')
+    bossImage = boostedWindow:recursiveGetChildById('bossImage')
 
---  if not Services.status and default_info then
-    if default_info then
+    if not (Services and (Services.status or Services.boosted or Services.events)) and default_info then
         local scrollable = showOffWindow:recursiveGetChildById('contentsPanel')
         local widget = g_ui.createWidget('ShowOffWidget', scrollable)
         local description = widget:recursiveGetChildById('description')
@@ -74,9 +75,6 @@ function init()
         monsterOutfit:setVisible(false)
         bossOutfit:setVisible(false)
         widget:resize(widget:getWidth(), description:getHeight())
-
-        monsterImage = boostedWindow:recursiveGetChildById('monsterImage')
-        bossImage = boostedWindow:recursiveGetChildById('bossImage')
 
         monsterImage:setImageSource("images/icon-questionmark")
         monsterImage:setVisible(true)

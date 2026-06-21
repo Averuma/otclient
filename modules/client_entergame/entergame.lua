@@ -345,8 +345,12 @@ function EnterGame.firstShow()
     if Services and Services.status then
         if g_modules.getModule("client_bottommenu"):isLoaded()  then
             EnterGame.postCacheInfo()
-            EnterGame.postEventScheduler()
             -- EnterGame.postShowOff() -- myacc/znote no send login.php
+        end
+    end
+    if Services and (Services.events or Services.status) then
+        if g_modules.getModule("client_bottommenu"):isLoaded() then
+            EnterGame.postEventScheduler()
         end
     end
     if Services and (Services.boosted or Services.status) then
@@ -470,7 +474,7 @@ function EnterGame.postEventScheduler()
         modules.client_bottommenu.setEventsSchedulerCalender(response.eventlist)
     end
 
-    HTTP.post(Services.status, json.encode({
+    HTTP.post(Services.events or Services.status, json.encode({
         type = requestType
     }), onRecvInfo, false)
 end

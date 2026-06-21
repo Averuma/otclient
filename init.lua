@@ -6,6 +6,7 @@ Services = {
     --updater = "http://localhost/api/updater.php", --./updater
     --status = "http://localhost/login.php", --./client_entergame | ./client_topmenu
     boosted = "http://127.0.0.1:8080/client-status.php",
+    events = "http://127.0.0.1:8080/client-status.php",
     --websites = "http://localhost/?subtopic=accountmanagement", --./client_entergame "Forgot password and/or email"
     --createAccount = "http://localhost/clientcreateaccount.php", --./client_entergame -- createAccount.lua
     --getCoinsUrl = "http://localhost/?subtopic=shop&step=terms", --./game_market
